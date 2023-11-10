@@ -17,9 +17,7 @@
 package miner
 
 import (
-	"encoding/base64"
 	"math/big"
-	"math/rand"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,18 +28,15 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/clique"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/mps"
 	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/core/txpool"
+	"github.com/ethereum/go-ethereum/core/txpool/legacypool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/private"
-	"github.com/ethereum/go-ethereum/private/engine"
-	"github.com/golang/mock/gomock"
-	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -55,7 +50,7 @@ const (
 
 var (
 	// Test chain configurations
-	testTxPoolConfig  core.TxPoolConfig
+	testTxPoolConfig  legacypool.Config
 	ethashChainConfig *params.ChainConfig
 	cliqueChainConfig *params.ChainConfig
 
@@ -73,16 +68,17 @@ var (
 
 	testConfig = &Config{
 		Recommit: time.Second,
-		GasFloor: params.GenesisGasLimit,
 		GasCeil:  params.GenesisGasLimit,
 	}
 )
 
 func init() {
-	testTxPoolConfig = core.DefaultTxPoolConfig
+	testTxPoolConfig = legacypool.DefaultConfig
 	testTxPoolConfig.Journal = ""
-	ethashChainConfig = params.TestChainConfig
-	cliqueChainConfig = params.TestChainConfig
+	ethashChainConfig = new(params.ChainConfig)
+	*ethashChainConfig = *params.TestChainConfig
+	cliqueChainConfig = new(params.ChainConfig)
+	*cliqueChainConfig = *params.TestChainConfig
 	cliqueChainConfig.Clique = &params.CliqueConfig{
 		Period: 10,
 		Epoch:  30000,
@@ -90,40 +86,38 @@ func init() {
 
 	signer := types.LatestSigner(params.TestChainConfig)
 	tx1 := types.MustSignNewTx(testBankKey, signer, &types.AccessListTx{
-		ChainID: params.TestChainConfig.ChainID,
-		Nonce:   0,
-		To:      &testUserAddress,
-		Value:   big.NewInt(1000),
-		Gas:     params.TxGas,
+		ChainID:  params.TestChainConfig.ChainID,
+		Nonce:    0,
+		To:       &testUserAddress,
+		Value:    big.NewInt(1000),
+		Gas:      params.TxGas,
+		GasPrice: big.NewInt(params.InitialBaseFee),
 	})
 	pendingTxs = append(pendingTxs, tx1)
 
 	tx2 := types.MustSignNewTx(testBankKey, signer, &types.LegacyTx{
-		Nonce: 1,
-		To:    &testUserAddress,
-		Value: big.NewInt(1000),
-		Gas:   params.TxGas,
+		Nonce:    1,
+		To:       &testUserAddress,
+		Value:    big.NewInt(1000),
+		Gas:      params.TxGas,
+		GasPrice: big.NewInt(params.InitialBaseFee),
 	})
 	newTxs = append(newTxs, tx2)
-
-	rand.Seed(time.Now().UnixNano())
 }
 
 // testWorkerBackend implements worker.Backend interfaces and wraps all information needed during the testing.
 type testWorkerBackend struct {
-	db         ethdb.Database
-	txPool     *core.TxPool
-	chain      *core.BlockChain
-	genesis    *core.Genesis
-	uncleBlock *types.Block
+	db      ethdb.Database
+	txPool  *txpool.TxPool
+	chain   *core.BlockChain
+	genesis *core.Genesis
 }
 
 func newTestWorkerBackend(t *testing.T, chainConfig *params.ChainConfig, engine consensus.Engine, db ethdb.Database, n int) *testWorkerBackend {
-	var gspec = core.Genesis{
+	var gspec = &core.Genesis{
 		Config: chainConfig,
 		Alloc:  core.GenesisAlloc{testBankAddress: {Balance: testBankFunds}},
 	}
-
 	switch e := engine.(type) {
 	case *clique.Clique:
 		gspec.ExtraData = make([]byte, 32+common.AddressLength+crypto.SignatureLength)
@@ -135,110 +129,56 @@ func newTestWorkerBackend(t *testing.T, chainConfig *params.ChainConfig, engine 
 	default:
 		t.Fatalf("unexpected consensus engine type: %T", engine)
 	}
-	genesis := gspec.MustCommit(db)
-
-	chain, _ := core.NewBlockChain(db, &core.CacheConfig{TrieDirtyDisabled: true}, gspec.Config, engine, vm.Config{}, nil, nil, nil)
-	txpool := core.NewTxPool(testTxPoolConfig, chainConfig, chain)
-
-	// Generate a small n-block chain and an uncle block for it
-	if n > 0 {
-		blocks, _ := core.GenerateChain(chainConfig, genesis, engine, db, n, func(i int, gen *core.BlockGen) {
-			gen.SetCoinbase(testBankAddress)
-		})
-		if _, err := chain.InsertChain(blocks); err != nil {
-			t.Fatalf("failed to insert origin chain: %v", err)
-		}
+	chain, err := core.NewBlockChain(db, &core.CacheConfig{TrieDirtyDisabled: true}, gspec, nil, engine, vm.Config{}, nil, nil)
+	if err != nil {
+		t.Fatalf("core.NewBlockChain failed: %v", err)
 	}
-	parent := genesis
-	if n > 0 {
-		parent = chain.GetBlockByHash(chain.CurrentBlock().ParentHash())
-	}
-	blocks, _ := core.GenerateChain(chainConfig, parent, engine, db, 1, func(i int, gen *core.BlockGen) {
-		gen.SetCoinbase(testUserAddress)
-	})
+	pool := legacypool.New(testTxPoolConfig, chain)
+	txpool, _ := txpool.New(new(big.Int).SetUint64(testTxPoolConfig.PriceLimit), chain, []txpool.SubPool{pool})
 
 	return &testWorkerBackend{
-		db:         db,
-		chain:      chain,
-		txPool:     txpool,
-		genesis:    &gspec,
-		uncleBlock: blocks[0],
+		db:      db,
+		chain:   chain,
+		txPool:  txpool,
+		genesis: gspec,
 	}
 }
 
-func (b *testWorkerBackend) ChainDb() ethdb.Database      { return b.db }
 func (b *testWorkerBackend) BlockChain() *core.BlockChain { return b.chain }
-func (b *testWorkerBackend) TxPool() *core.TxPool         { return b.txPool }
+func (b *testWorkerBackend) TxPool() *txpool.TxPool       { return b.txPool }
 
-func (b *testWorkerBackend) newRandomUncle() *types.Block {
-	var parent *types.Block
-	cur := b.chain.CurrentBlock()
-	if cur.NumberU64() == 0 {
-		parent = b.chain.Genesis()
-	} else {
-		parent = b.chain.GetBlockByHash(b.chain.CurrentBlock().ParentHash())
-	}
-	blocks, _ := core.GenerateChain(b.chain.Config(), parent, b.chain.Engine(), b.db, 1, func(i int, gen *core.BlockGen) {
-		var addr = make([]byte, common.AddressLength)
-		rand.Read(addr)
-		gen.SetCoinbase(common.BytesToAddress(addr))
-	})
-	return blocks[0]
-}
-
-func (b *testWorkerBackend) newRandomTx(creation bool, private bool) *types.Transaction {
-	var signer types.Signer
-	signer = types.HomesteadSigner{}
-	if private {
-		signer = types.QuorumPrivateTxSigner{}
-	}
+func (b *testWorkerBackend) newRandomTx(creation bool) *types.Transaction {
 	var tx *types.Transaction
+	gasPrice := big.NewInt(10 * params.InitialBaseFee)
 	if creation {
-		tx, _ = types.SignTx(types.NewContractCreation(b.txPool.Nonce(testBankAddress), big.NewInt(0), testGas, nil, common.FromHex(testCode)), signer, testBankKey)
+		tx, _ = types.SignTx(types.NewContractCreation(b.txPool.Nonce(testBankAddress), big.NewInt(0), testGas, gasPrice, common.FromHex(testCode)), types.HomesteadSigner{}, testBankKey)
 	} else {
-		tx, _ = types.SignTx(types.NewTransaction(b.txPool.Nonce(testBankAddress), testUserAddress, big.NewInt(1000), params.TxGas, nil, nil), signer, testBankKey)
+		tx, _ = types.SignTx(types.NewTransaction(b.txPool.Nonce(testBankAddress), testUserAddress, big.NewInt(1000), params.TxGas, gasPrice, nil), types.HomesteadSigner{}, testBankKey)
 	}
 	return tx
 }
 
 func newTestWorker(t *testing.T, chainConfig *params.ChainConfig, engine consensus.Engine, db ethdb.Database, blocks int) (*worker, *testWorkerBackend) {
 	backend := newTestWorkerBackend(t, chainConfig, engine, db, blocks)
-	backend.txPool.AddLocals(pendingTxs)
+	backend.txPool.Add(pendingTxs, true, false)
 	w := newWorker(testConfig, chainConfig, engine, backend, new(event.TypeMux), nil, false)
 	w.setEtherbase(testBankAddress)
 	return w, backend
 }
 
-func TestGenerateBlockAndImportEthash(t *testing.T) {
-	testGenerateBlockAndImport(t, false)
-}
-
-func TestGenerateBlockAndImportClique(t *testing.T) {
-	testGenerateBlockAndImport(t, true)
-}
-
-func testGenerateBlockAndImport(t *testing.T, isClique bool) {
+func TestGenerateAndImportBlock(t *testing.T) {
 	var (
-		engine      consensus.Engine
-		chainConfig *params.ChainConfig
-		db          = rawdb.NewMemoryDatabase()
+		db     = rawdb.NewMemoryDatabase()
+		config = *params.AllCliqueProtocolChanges
 	)
-	if isClique {
-		chainConfig = params.AllCliqueProtocolChanges
-		chainConfig.Clique = &params.CliqueConfig{Period: 1, Epoch: 30000}
-		engine = clique.New(chainConfig.Clique, db)
-	} else {
-		chainConfig = params.AllEthashProtocolChanges
-		engine = ethash.NewFaker()
-	}
+	config.Clique = &params.CliqueConfig{Period: 1, Epoch: 30000}
+	engine := clique.New(config.Clique, db)
 
-	w, b := newTestWorker(t, chainConfig, engine, db, 0)
+	w, b := newTestWorker(t, &config, engine, db, 0)
 	defer w.close()
 
 	// This test chain imports the mined blocks.
-	db2 := rawdb.NewMemoryDatabase()
-	b.genesis.MustCommit(db2)
-	chain, _ := core.NewBlockChain(db2, nil, b.chain.Config(), engine, vm.Config{}, nil, nil, nil)
+	chain, _ := core.NewBlockChain(rawdb.NewMemoryDatabase(), nil, b.genesis, nil, engine, vm.Config{}, nil, nil)
 	defer chain.Stop()
 
 	// Ignore empty commit here for less noise.
@@ -254,10 +194,8 @@ func testGenerateBlockAndImport(t *testing.T, isClique bool) {
 	w.start()
 
 	for i := 0; i < 5; i++ {
-		b.txPool.AddLocal(b.newRandomTx(true, false))
-		b.txPool.AddLocal(b.newRandomTx(false, false))
-		w.postSideBlock(core.ChainSideEvent{Block: b.newRandomUncle()})
-		w.postSideBlock(core.ChainSideEvent{Block: b.newRandomUncle()})
+		b.txPool.Add([]*types.Transaction{b.newRandomTx(true)}, true, false)
+		b.txPool.Add([]*types.Transaction{b.newRandomTx(false)}, true, false)
 
 		select {
 		case ev := <-sub.Chan():
@@ -284,17 +222,10 @@ func testEmptyWork(t *testing.T, chainConfig *params.ChainConfig, engine consens
 	w, _ := newTestWorker(t, chainConfig, engine, rawdb.NewMemoryDatabase(), 0)
 	defer w.close()
 
-	var (
-		taskIndex int
-		taskCh    = make(chan struct{}, 2)
-	)
-	checkEqual := func(t *testing.T, task *task, index int) {
-		// The first empty work without any txs included
-		receiptLen, balance := 0, big.NewInt(0)
-		if index == 1 {
-			// The second full work with 1 tx included
-			receiptLen, balance = 1, big.NewInt(1000)
-		}
+	taskCh := make(chan struct{}, 2)
+	checkEqual := func(t *testing.T, task *task) {
+		// The work should contain 1 tx
+		receiptLen, balance := 1, big.NewInt(1000)
 		if len(task.receipts) != receiptLen {
 			t.Fatalf("receipt number mismatch: have %d, want %d", len(task.receipts), receiptLen)
 		}
@@ -304,8 +235,7 @@ func testEmptyWork(t *testing.T, chainConfig *params.ChainConfig, engine consens
 	}
 	w.newTaskHook = func(task *task) {
 		if task.block.NumberU64() == 1 {
-			checkEqual(t, task, taskIndex)
-			taskIndex += 1
+			checkEqual(t, task)
 			taskCh <- struct{}{}
 		}
 	}
@@ -314,122 +244,9 @@ func testEmptyWork(t *testing.T, chainConfig *params.ChainConfig, engine consens
 		time.Sleep(100 * time.Millisecond)
 	}
 	w.start() // Start mining!
-	for i := 0; i < 2; i += 1 {
-		select {
-		case <-taskCh:
-		case <-time.NewTimer(3 * time.Second).C:
-			t.Error("new task timeout")
-		}
-	}
-}
-
-func TestStreamUncleBlock(t *testing.T) {
-	ethash := ethash.NewFaker()
-	defer ethash.Close()
-
-	w, b := newTestWorker(t, ethashChainConfig, ethash, rawdb.NewMemoryDatabase(), 1)
-	defer w.close()
-
-	var taskCh = make(chan struct{})
-
-	taskIndex := 0
-	w.newTaskHook = func(task *task) {
-		if task.block.NumberU64() == 2 {
-			// The first task is an empty task, the second
-			// one has 1 pending tx, the third one has 1 tx
-			// and 1 uncle.
-			if taskIndex == 2 {
-				have := task.block.Header().UncleHash
-				want := types.CalcUncleHash([]*types.Header{b.uncleBlock.Header()})
-				if have != want {
-					t.Errorf("uncle hash mismatch: have %s, want %s", have.Hex(), want.Hex())
-				}
-			}
-			taskCh <- struct{}{}
-			taskIndex += 1
-		}
-	}
-	w.skipSealHook = func(task *task) bool {
-		return true
-	}
-	w.fullTaskHook = func() {
-		time.Sleep(100 * time.Millisecond)
-	}
-	w.start()
-
-	for i := 0; i < 2; i += 1 {
-		select {
-		case <-taskCh:
-		case <-time.NewTimer(time.Second).C:
-			t.Error("new task timeout")
-		}
-	}
-
-	w.postSideBlock(core.ChainSideEvent{Block: b.uncleBlock})
-
 	select {
 	case <-taskCh:
-	case <-time.NewTimer(time.Second).C:
-		t.Error("new task timeout")
-	}
-}
-
-func TestRegenerateMiningBlockEthash(t *testing.T) {
-	testRegenerateMiningBlock(t, ethashChainConfig, ethash.NewFaker())
-}
-
-func TestRegenerateMiningBlockClique(t *testing.T) {
-	testRegenerateMiningBlock(t, cliqueChainConfig, clique.New(cliqueChainConfig.Clique, rawdb.NewMemoryDatabase()))
-}
-
-func testRegenerateMiningBlock(t *testing.T, chainConfig *params.ChainConfig, engine consensus.Engine) {
-	defer engine.Close()
-
-	w, b := newTestWorker(t, chainConfig, engine, rawdb.NewMemoryDatabase(), 0)
-	defer w.close()
-
-	var taskCh = make(chan struct{})
-
-	taskIndex := 0
-	w.newTaskHook = func(task *task) {
-		if task.block.NumberU64() == 1 {
-			// The first task is an empty task, the second
-			// one has 1 pending tx, the third one has 2 txs
-			if taskIndex == 2 {
-				receiptLen, balance := 2, big.NewInt(2000)
-				if len(task.receipts) != receiptLen {
-					t.Errorf("receipt number mismatch: have %d, want %d", len(task.receipts), receiptLen)
-				}
-				if task.state.GetBalance(testUserAddress).Cmp(balance) != 0 {
-					t.Errorf("account balance mismatch: have %d, want %d", task.state.GetBalance(testUserAddress), balance)
-				}
-			}
-			taskCh <- struct{}{}
-			taskIndex += 1
-		}
-	}
-	w.skipSealHook = func(task *task) bool {
-		return true
-	}
-	w.fullTaskHook = func() {
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	w.start()
-	// Ignore the first two works
-	for i := 0; i < 2; i += 1 {
-		select {
-		case <-taskCh:
-		case <-time.NewTimer(time.Second).C:
-			t.Error("new task timeout")
-		}
-	}
-	b.txPool.AddLocals(newTxs)
-	time.Sleep(time.Second)
-
-	select {
-	case <-taskCh:
-	case <-time.NewTimer(time.Second).C:
+	case <-time.NewTimer(3 * time.Second).C:
 		t.Error("new task timeout")
 	}
 }
@@ -458,11 +275,11 @@ func testAdjustInterval(t *testing.T, chainConfig *params.ChainConfig, engine co
 		progress = make(chan struct{}, 10)
 		result   = make([]float64, 0, 10)
 		index    = 0
-		start    uint32
+		start    atomic.Bool
 	)
 	w.resubmitHook = func(minInterval time.Duration, recommitInterval time.Duration) {
 		// Short circuit if interval checking hasn't started.
-		if atomic.LoadUint32(&start) == 0 {
+		if !start.Load() {
 			return
 		}
 		var wantMinInterval, wantRecommitInterval time.Duration
@@ -496,8 +313,8 @@ func testAdjustInterval(t *testing.T, chainConfig *params.ChainConfig, engine co
 	}
 	w.start()
 
-	time.Sleep(time.Second) // Ensure two tasks have been summitted due to start opt
-	atomic.StoreUint32(&start, 1)
+	time.Sleep(time.Second) // Ensure two tasks have been submitted due to start opt
+	start.Store(true)
 
 	w.setRecommitInterval(3 * time.Second)
 	select {
@@ -528,225 +345,157 @@ func testAdjustInterval(t *testing.T, chainConfig *params.ChainConfig, engine co
 	}
 }
 
-var PSI1PSM = mps.PrivateStateMetadata{
-	ID:          "psi1",
-	Name:        "psi1",
-	Description: "private state 1",
-	Type:        mps.Resident,
-	Addresses:   nil,
+func TestGetSealingWorkEthash(t *testing.T) {
+	testGetSealingWork(t, ethashChainConfig, ethash.NewFaker())
 }
 
-var PSI2PSM = mps.PrivateStateMetadata{
-	ID:          "psi2",
-	Name:        "psi2",
-	Description: "private state 2",
-	Type:        mps.Resident,
-	Addresses:   nil,
+func TestGetSealingWorkClique(t *testing.T) {
+	testGetSealingWork(t, cliqueChainConfig, clique.New(cliqueChainConfig.Clique, rawdb.NewMemoryDatabase()))
 }
 
-func TestPrivatePSMRStateCreated(t *testing.T) {
-	mockCtrl := gomock.NewController(t)
-	defer mockCtrl.Finish()
+func TestGetSealingWorkPostMerge(t *testing.T) {
+	local := new(params.ChainConfig)
+	*local = *ethashChainConfig
+	local.TerminalTotalDifficulty = big.NewInt(0)
+	testGetSealingWork(t, local, ethash.NewFaker())
+}
 
-	mockptm := private.NewMockPrivateTransactionManager(mockCtrl)
-	mockptm.EXPECT().HasFeature(engine.MultiplePrivateStates).Return(true)
-	mockptm.EXPECT().Groups().Return([]engine.PrivacyGroup{
-		{
-			Type:           "RESIDENT",
-			Name:           PSI1PSM.Name,
-			PrivacyGroupId: base64.StdEncoding.EncodeToString([]byte(PSI1PSM.ID)),
-			Description:    "Resident Group 1",
-			From:           "",
-			Members:        []string{"psi1"},
-		},
-		{
-			Type:           "RESIDENT",
-			Name:           PSI2PSM.Name,
-			PrivacyGroupId: base64.StdEncoding.EncodeToString([]byte(PSI2PSM.ID)),
-			Description:    "Resident Group 2",
-			From:           "",
-			Members:        []string{"psi2"},
-		},
-	}, nil)
+func testGetSealingWork(t *testing.T, chainConfig *params.ChainConfig, engine consensus.Engine) {
+	defer engine.Close()
 
-	saved := private.P
-	defer func() {
-		private.P = saved
-	}()
-	private.P = mockptm
-
-	db := rawdb.NewMemoryDatabase()
-	chainConfig := params.AllCliqueProtocolChanges
-	chainConfig.IsQuorum = true
-	chainConfig.IsMPS = true
-	defer func() { chainConfig.IsQuorum = false }()
-	defer func() { chainConfig.IsMPS = false }()
-
-	w, b := newTestWorker(t, chainConfig, clique.New(chainConfig.Clique, db), db, 0)
+	w, b := newTestWorker(t, chainConfig, engine, rawdb.NewMemoryDatabase(), 0)
 	defer w.close()
 
-	newBlock := make(chan *types.Block)
-	listenNewBlock := func() {
-		sub := w.mux.Subscribe(core.NewMinedBlockEvent{})
-		defer sub.Unsubscribe()
+	w.setExtra([]byte{0x01, 0x02})
 
-		for item := range sub.Chan() {
-			newBlock <- item.Data.(core.NewMinedBlockEvent).Block
-		}
-	}
-	w.start() // Start mining!
-
-	// Ignore first 2 commits caused by start operation
-	ignored := make(chan struct{}, 2)
 	w.skipSealHook = func(task *task) bool {
-		ignored <- struct{}{}
 		return true
 	}
-	timer := time.NewTimer(3 * time.Second)
-	for i := 0; i < 2; i++ {
-		select {
-		case <-ignored:
-		case <-timer.C:
-			t.Fatalf("timeout")
+	w.fullTaskHook = func() {
+		time.Sleep(100 * time.Millisecond)
+	}
+	timestamp := uint64(time.Now().Unix())
+	assertBlock := func(block *types.Block, number uint64, coinbase common.Address, random common.Hash) {
+		if block.Time() != timestamp {
+			// Sometime the timestamp will be mutated if the timestamp
+			// is even smaller than parent block's. It's OK.
+			t.Logf("Invalid timestamp, want %d, get %d", timestamp, block.Time())
 		}
-	}
-	timer.Stop()
-
-	go listenNewBlock()
-
-	// Ignore empty commit here for less noise
-	w.skipSealHook = func(task *task) bool {
-		return len(task.receipts) == 0
-	}
-	for i := 0; i < 5; i++ {
-		randomPrivateTx := b.newRandomTx(true, true)
-		mockptm.EXPECT().Receive(common.BytesToEncryptedPayloadHash(randomPrivateTx.Data())).Return("", []string{"psi1", "psi2"}, common.FromHex(testCode), nil, nil).AnyTimes()
-		mockptm.EXPECT().Receive(common.EncryptedPayloadHash{}).Return("", []string{}, common.EncryptedPayloadHash{}.Bytes(), nil, nil).AnyTimes()
-		expectedContractAddress := crypto.CreateAddress(randomPrivateTx.From(), randomPrivateTx.Nonce())
-		b.txPool.AddLocal(randomPrivateTx)
-		select {
-		case blk := <-newBlock:
-			//check if the tx is present
-			found := blk.Transaction(randomPrivateTx.Hash())
-			if found == nil {
-				continue
+		_, isClique := engine.(*clique.Clique)
+		if !isClique {
+			if len(block.Extra()) != 2 {
+				t.Error("Unexpected extra field")
 			}
-
-			latestBlockRoot := b.BlockChain().CurrentBlock().Root()
-			_, privDb, err := b.BlockChain().StateAtPSI(latestBlockRoot, types.ToPrivateStateIdentifier("empty"))
-			assert.NoError(t, err)
-			assert.True(t, privDb.Exist(expectedContractAddress))
-			assert.Equal(t, privDb.GetCodeSize(expectedContractAddress), 0)
-			//contract should exist on both psi states and not be empty
-			_, privDb, _ = b.BlockChain().StateAtPSI(latestBlockRoot, types.ToPrivateStateIdentifier("psi1"))
-			assert.True(t, privDb.Exist(expectedContractAddress))
-			assert.False(t, privDb.Empty(expectedContractAddress))
-			assert.NotEqual(t, privDb.GetCodeSize(expectedContractAddress), 0)
-			_, privDb, _ = b.BlockChain().StateAtPSI(latestBlockRoot, types.ToPrivateStateIdentifier("psi2"))
-			assert.True(t, privDb.Exist(expectedContractAddress))
-			assert.False(t, privDb.Empty(expectedContractAddress))
-			assert.NotEqual(t, privDb.GetCodeSize(expectedContractAddress), 0)
-			//contract should exist on random state (delegated to emptystate) but no contract code
-			_, privDb, _ = b.BlockChain().StateAtPSI(latestBlockRoot, types.ToPrivateStateIdentifier("other"))
-			assert.True(t, privDb.Exist(expectedContractAddress))
-			assert.Equal(t, privDb.GetCodeSize(expectedContractAddress), 0)
-		case <-time.NewTimer(3 * time.Second).C: // Worker needs 1s to include new changes.
-			t.Fatalf("timeout")
-		}
-	}
-
-	logsChan := make(chan []*types.Log)
-	sub := b.BlockChain().SubscribeLogsEvent(logsChan)
-	defer sub.Unsubscribe()
-
-	logsContractData := "6080604052348015600f57600080fd5b507f24ec1d3ff24c2f6ff210738839dbc339cd45a5294d85c79361016243157aae7b60405160405180910390a1603e8060496000396000f3fe6080604052600080fdfea265627a7a72315820937805cb4f2481262ad95d420ab93220f11ceaea518c7ccf119fc2c58f58050d64736f6c63430005110032"
-	tx, _ := types.SignTx(types.NewContractCreation(b.txPool.Nonce(testBankAddress), big.NewInt(0), 470000, nil, common.FromHex(logsContractData)), types.QuorumPrivateTxSigner{}, testBankKey)
-
-	mockptm.EXPECT().Receive(common.BytesToEncryptedPayloadHash(tx.Data())).Return("", []string{"psi1", "psi2"}, common.FromHex(logsContractData), nil, nil).AnyTimes()
-
-	b.txPool.AddLocal(tx)
-
-	select {
-	case logs := <-logsChan:
-		assert.Len(t, logs, 2)
-		assert.Contains(t, []types.PrivateStateIdentifier{logs[0].PSI, logs[1].PSI}, types.PrivateStateIdentifier("psi1"))
-		assert.Contains(t, []types.PrivateStateIdentifier{logs[0].PSI, logs[1].PSI}, types.PrivateStateIdentifier("psi2"))
-	case <-time.NewTimer(3 * time.Second).C:
-		t.Error("timeout")
-	}
-}
-
-func TestPrivateLegacyStateCreated(t *testing.T) {
-	mockCtrl := gomock.NewController(t)
-	defer mockCtrl.Finish()
-
-	mockptm := private.NewMockPrivateTransactionManager(mockCtrl)
-
-	saved := private.P
-	defer func() {
-		private.P = saved
-	}()
-	private.P = mockptm
-
-	db := rawdb.NewMemoryDatabase()
-	chainConfig := params.AllCliqueProtocolChanges
-	chainConfig.IsQuorum = true
-	chainConfig.IsMPS = false
-	defer func() { chainConfig.IsQuorum = false }()
-
-	w, b := newTestWorker(t, chainConfig, clique.New(chainConfig.Clique, db), db, 0)
-	defer w.close()
-
-	newBlock := make(chan *types.Block)
-	listenNewBlock := func() {
-		sub := w.mux.Subscribe(core.NewMinedBlockEvent{})
-		defer sub.Unsubscribe()
-
-		for item := range sub.Chan() {
-			newBlock <- item.Data.(core.NewMinedBlockEvent).Block
-		}
-	}
-	w.start() // Start mining!
-
-	// Ignore first 2 commits caused by start operation
-	ignored := make(chan struct{}, 2)
-	w.skipSealHook = func(task *task) bool {
-		ignored <- struct{}{}
-		return true
-	}
-	for i := 0; i < 2; i++ {
-		<-ignored
-	}
-
-	go listenNewBlock()
-
-	// Ignore empty commit here for less noise
-	w.skipSealHook = func(task *task) bool {
-		return len(task.receipts) == 0
-	}
-	for i := 0; i < 5; i++ {
-		mockptm.EXPECT().Receive(gomock.Any()).Return("", []string{}, common.FromHex(testCode), nil, nil).Times(1)
-		randomPrivateTx := b.newRandomTx(true, true)
-		expectedContractAddress := crypto.CreateAddress(randomPrivateTx.From(), randomPrivateTx.Nonce())
-		b.txPool.AddLocal(randomPrivateTx)
-		select {
-		case blk := <-newBlock:
-			//check if the tx is present
-			found := blk.Transaction(randomPrivateTx.Hash())
-			if found == nil {
-				continue
+			if block.Coinbase() != coinbase {
+				t.Errorf("Unexpected coinbase got %x want %x", block.Coinbase(), coinbase)
 			}
+		} else {
+			if block.Coinbase() != (common.Address{}) {
+				t.Error("Unexpected coinbase")
+			}
+		}
+		if !isClique {
+			if block.MixDigest() != random {
+				t.Error("Unexpected mix digest")
+			}
+		}
+		if block.Nonce() != 0 {
+			t.Error("Unexpected block nonce")
+		}
+		if block.NumberU64() != number {
+			t.Errorf("Mismatched block number, want %d got %d", number, block.NumberU64())
+		}
+	}
+	var cases = []struct {
+		parent       common.Hash
+		coinbase     common.Address
+		random       common.Hash
+		expectNumber uint64
+		expectErr    bool
+	}{
+		{
+			b.chain.Genesis().Hash(),
+			common.HexToAddress("0xdeadbeef"),
+			common.HexToHash("0xcafebabe"),
+			uint64(1),
+			false,
+		},
+		{
+			b.chain.CurrentBlock().Hash(),
+			common.HexToAddress("0xdeadbeef"),
+			common.HexToHash("0xcafebabe"),
+			b.chain.CurrentBlock().Number.Uint64() + 1,
+			false,
+		},
+		{
+			b.chain.CurrentBlock().Hash(),
+			common.Address{},
+			common.HexToHash("0xcafebabe"),
+			b.chain.CurrentBlock().Number.Uint64() + 1,
+			false,
+		},
+		{
+			b.chain.CurrentBlock().Hash(),
+			common.Address{},
+			common.Hash{},
+			b.chain.CurrentBlock().Number.Uint64() + 1,
+			false,
+		},
+		{
+			common.HexToHash("0xdeadbeef"),
+			common.HexToAddress("0xdeadbeef"),
+			common.HexToHash("0xcafebabe"),
+			0,
+			true,
+		},
+	}
 
-			latestBlockRoot := b.BlockChain().CurrentBlock().Root()
-			//contract exists on default state
-			_, privDb, _ := b.BlockChain().StateAtPSI(latestBlockRoot, types.DefaultPrivateStateIdentifier)
-			assert.True(t, privDb.Exist(expectedContractAddress))
-			assert.NotEqual(t, privDb.GetCodeSize(expectedContractAddress), 0)
-			//only "private" state on legacy psm
-			_, _, err := b.BlockChain().StateAtPSI(latestBlockRoot, types.ToPrivateStateIdentifier("other"))
-			assert.Error(t, err, "Only the 'private' psi is supported by the default private state manager")
-		case <-time.NewTimer(3 * time.Second).C: // Worker needs 1s to include new changes.
-			t.Fatalf("timeout")
+	// This API should work even when the automatic sealing is not enabled
+	for _, c := range cases {
+		r := w.getSealingBlock(&generateParams{
+			parentHash:  c.parent,
+			timestamp:   timestamp,
+			coinbase:    c.coinbase,
+			random:      c.random,
+			withdrawals: nil,
+			beaconRoot:  nil,
+			noTxs:       false,
+			forceTime:   true,
+		})
+		if c.expectErr {
+			if r.err == nil {
+				t.Error("Expect error but get nil")
+			}
+		} else {
+			if r.err != nil {
+				t.Errorf("Unexpected error %v", r.err)
+			}
+			assertBlock(r.block, c.expectNumber, c.coinbase, c.random)
+		}
+	}
+
+	// This API should work even when the automatic sealing is enabled
+	w.start()
+	for _, c := range cases {
+		r := w.getSealingBlock(&generateParams{
+			parentHash:  c.parent,
+			timestamp:   timestamp,
+			coinbase:    c.coinbase,
+			random:      c.random,
+			withdrawals: nil,
+			beaconRoot:  nil,
+			noTxs:       false,
+			forceTime:   true,
+		})
+		if c.expectErr {
+			if r.err == nil {
+				t.Error("Expect error but get nil")
+			}
+		} else {
+			if r.err != nil {
+				t.Errorf("Unexpected error %v", r.err)
+			}
+			assertBlock(r.block, c.expectNumber, c.coinbase, c.random)
 		}
 	}
 }

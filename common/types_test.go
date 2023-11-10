@@ -19,15 +19,13 @@ package common
 import (
 	"bytes"
 	"database/sql/driver"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
+	"time"
 )
 
 func TestBytesConversion(t *testing.T) {
@@ -157,6 +155,31 @@ func BenchmarkAddressHex(b *testing.B) {
 	}
 }
 
+// Test checks if the customized json marshaller of MixedcaseAddress object
+// is invoked correctly. In golang the struct pointer will inherit the
+// non-pointer receiver methods, the reverse is not true. In the case of
+// MixedcaseAddress, it must define the MarshalJSON method in the object
+// but not the pointer level, so that this customized marshalled can be used
+// for both MixedcaseAddress object and pointer.
+func TestMixedcaseAddressMarshal(t *testing.T) {
+	var (
+		output string
+		input  = "0xae967917c465db8578ca9024c205720b1a3651A9"
+	)
+	addr, err := NewMixedcaseAddressFromString(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := json.Marshal(*addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.Unmarshal(blob, &output)
+	if output != input {
+		t.Fatal("Failed to marshal/unmarshal MixedcaseAddress object")
+	}
+}
+
 func TestMixedcaseAccount_Address(t *testing.T) {
 	// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
 	// Note: 0X{checksum_addr} is not valid according to spec above
@@ -180,7 +203,7 @@ func TestMixedcaseAccount_Address(t *testing.T) {
 		}
 	}
 
-	//These should throw exceptions:
+	// These should throw exceptions:
 	var r2 []MixedcaseAddress
 	for _, r := range []string{
 		`["0x11111111111111111111122222222222233333"]`,     // Too short
@@ -195,67 +218,6 @@ func TestMixedcaseAccount_Address(t *testing.T) {
 			t.Errorf("Expected failure, input %v", r)
 		}
 	}
-}
-
-func TestBytesToEncryptedPayloadHash_whenTypical(t *testing.T) {
-	arbitraryBytes := []byte{10}
-	var expected EncryptedPayloadHash
-	expected[EncryptedPayloadHashLength-1] = 10
-
-	actual := BytesToEncryptedPayloadHash(arbitraryBytes)
-
-	assert.Equal(t, expected, actual)
-}
-
-func TestEncryptedPayloadHash_Bytes(t *testing.T) {
-	arbitraryBytes := []byte{10}
-	h := BytesToEncryptedPayloadHash(arbitraryBytes)
-
-	actual := h.Bytes()
-
-	assert.Equal(t, arbitraryBytes[0], actual[EncryptedPayloadHashLength-1])
-}
-
-func TestEncryptedPayloadHash_BytesTypeRef(t *testing.T) {
-	arbitraryBytes := []byte{10}
-	h := BytesToEncryptedPayloadHash(arbitraryBytes)
-	expected := h.Hex()
-
-	bt := h.BytesTypeRef()
-	actual := bt.String()
-
-	assert.Equal(t, expected, actual)
-}
-
-func TestEncryptedPayloadHash_ToBase64(t *testing.T) {
-	arbitraryBytes := []byte{10}
-	h := BytesToEncryptedPayloadHash(arbitraryBytes)
-	expected := base64.StdEncoding.EncodeToString(h.Bytes())
-
-	actual := h.ToBase64()
-
-	assert.Equal(t, expected, actual)
-}
-
-func TestEmptyEncryptedPayloadHash(t *testing.T) {
-	emptyHash := EncryptedPayloadHash{}
-
-	assert.True(t, EmptyEncryptedPayloadHash(emptyHash))
-}
-
-func TestEncryptedPayloadHashes_whenTypical(t *testing.T) {
-	arbitraryBytes1 := []byte{10}
-	arbitraryBytes2 := []byte{5}
-	h, err := Base64sToEncryptedPayloadHashes([]string{base64.StdEncoding.EncodeToString(arbitraryBytes1), base64.StdEncoding.EncodeToString(arbitraryBytes2)})
-	if err != nil {
-		t.Fatalf("must be able to convert but fail due to %s", err)
-	}
-
-	arbitraryBytes3 := []byte{7}
-	newItem := BytesToEncryptedPayloadHash(arbitraryBytes3)
-	h.Add(newItem)
-
-	assert.False(t, h.NotExist(newItem))
 }
 
 func TestHash_Scan(t *testing.T) {
@@ -599,16 +561,37 @@ func TestHash_Format(t *testing.T) {
 	}
 }
 
-// Quorum
+func TestAddressEIP55(t *testing.T) {
+	addr := HexToAddress("0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed")
+	addrEIP55 := AddressEIP55(addr)
 
-func TestFormatTerminalString_Value(t *testing.T) {
-	assert.Equal(t, "", FormatTerminalString(nil))
-	assert.Equal(t, "", FormatTerminalString([]byte{}))
-	b := []byte{
-		0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd,
+	if addr.Hex() != addrEIP55.String() {
+		t.Fatal("AddressEIP55 should match original address hex")
 	}
-	str := FormatTerminalString(b)
-	assert.Equal(t, "123456…90abcd", str)
-	str = FormatTerminalString(b[1:])
-	assert.Equal(t, "34567890abcd", str)
+
+	blob, err := addrEIP55.MarshalJSON()
+	if err != nil {
+		t.Fatal("Failed to marshal AddressEIP55", err)
+	}
+	if strings.Trim(string(blob), "\"") != addr.Hex() {
+		t.Fatal("Address with checksum is expected")
+	}
+	var dec Address
+	if err := json.Unmarshal(blob, &dec); err != nil {
+		t.Fatal("Failed to unmarshal AddressEIP55", err)
+	}
+	if addr != dec {
+		t.Fatal("Unexpected address after unmarshal")
+	}
+}
+
+func BenchmarkPrettyDuration(b *testing.B) {
+	var x = PrettyDuration(time.Duration(int64(1203123912312)))
+	b.Logf("Pre %s", time.Duration(x).String())
+	var a string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a = x.String()
+	}
+	b.Logf("Post %s", a)
 }

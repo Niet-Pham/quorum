@@ -18,12 +18,12 @@ package eth
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
-	"github.com/ethereum/go-ethereum/eth/protocols/qlight"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/p2p"
 )
@@ -42,7 +42,7 @@ var (
 	errPeerNotRegistered = errors.New("peer not registered")
 
 	// errSnapWithoutEth is returned if a peer attempts to connect only on the
-	// snap protocol without advertizing the eth main protocol.
+	// snap protocol without advertising the eth main protocol.
 	errSnapWithoutEth = errors.New("peer connected on snap without compatible eth support")
 )
 
@@ -75,7 +75,7 @@ func (ps *peerSet) registerSnapExtension(peer *snap.Peer) error {
 	// Reject the peer if it advertises `snap` without `eth` as `snap` is only a
 	// satellite protocol meaningful with the chain selection of `eth`
 	if !peer.RunningCap(eth.ProtocolName, eth.ProtocolVersions) {
-		return errSnapWithoutEth
+		return fmt.Errorf("%w: have %v", errSnapWithoutEth, peer.Caps())
 	}
 	// Ensure nobody can double connect
 	ps.lock.Lock()
@@ -231,7 +231,7 @@ func (ps *peerSet) snapLen() int {
 }
 
 // peerWithHighestTD retrieves the known peer with the currently highest total
-// difficulty.
+// difficulty, but below the given PoS switchover threshold.
 func (ps *peerSet) peerWithHighestTD() *eth.Peer {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
@@ -257,43 +257,4 @@ func (ps *peerSet) close() {
 		p.Disconnect(p2p.DiscQuitting)
 	}
 	ps.closed = true
-}
-
-// Quorum
-
-func (ps *peerSet) UpdateTokenForRunningQPeers(token string) error {
-	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
-	for _, p := range ps.peers {
-		if p.qlight != nil {
-			err := p.qlight.SendNewAuthToken(token)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// registerPeer injects a new `eth` peer into the working set, or returns an error
-// if the peer is already known.
-func (ps *peerSet) registerQPeer(peer *qlight.Peer) error {
-	// Start tracking the new peer
-	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
-	if ps.closed {
-		return errPeerSetClosed
-	}
-	id := peer.ID()
-	if _, ok := ps.peers[id]; ok {
-		return errPeerAlreadyRegistered
-	}
-	eth := &ethPeer{
-		Peer:   peer.EthPeer,
-		qlight: peer,
-	}
-	ps.peers[id] = eth
-	return nil
 }

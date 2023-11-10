@@ -21,32 +21,34 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
+	"sync"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/event"
+)
+
+const basefeeWiggleMultiplier = 2
+
+var (
+	errNoEventSignature       = errors.New("no event signature")
+	errEventSignatureMismatch = errors.New("event signature mismatch")
 )
 
 // SignerFn is a signer function callback when a contract requires a method to
 // sign the transaction before submission.
 type SignerFn func(common.Address, *types.Transaction) (*types.Transaction, error)
 
-// Quorum
-//
-// Additional arguments in order to support transaction privacy
-type PrivateTxArgs struct {
-	PrivateFor []string `json:"privateFor"`
-}
-
 // CallOpts is the collection of options to fine tune a contract call request.
 type CallOpts struct {
 	Pending     bool            // Whether to operate on the pending state or the last known one
 	From        common.Address  // Optional the sender address, otherwise the first account is used
 	BlockNumber *big.Int        // Optional the block number on which the call should be performed
+	BlockHash   common.Hash     // Optional the block hash on which the call should be performed
 	Context     context.Context // Network context to support cancellation and timeouts (nil = no timeout)
 }
 
@@ -57,18 +59,15 @@ type TransactOpts struct {
 	Nonce  *big.Int       // Nonce to use for the transaction execution (nil = use pending state)
 	Signer SignerFn       // Method to use for signing the transaction (mandatory)
 
-	Value    *big.Int // Funds to transfer along the transaction (nil = 0 = no funds)
-	GasPrice *big.Int // Gas price to use for the transaction execution (nil = gas price oracle)
-	GasLimit uint64   // Gas limit to set for the transaction execution (0 = estimate)
+	Value     *big.Int // Funds to transfer along the transaction (nil = 0 = no funds)
+	GasPrice  *big.Int // Gas price to use for the transaction execution (nil = gas price oracle)
+	GasFeeCap *big.Int // Gas fee cap to use for the 1559 transaction execution (nil = gas price oracle)
+	GasTipCap *big.Int // Gas priority fee cap to use for the 1559 transaction execution (nil = gas price oracle)
+	GasLimit  uint64   // Gas limit to set for the transaction execution (0 = estimate)
 
 	Context context.Context // Network context to support cancellation and timeouts (nil = no timeout)
 
 	NoSend bool // Do all transact steps but do not send the transaction
-
-	// Quorum
-	PrivateFrom              string   // The public key of the Tessera/Constellation identity to send this tx from.
-	PrivateFor               []string // The public keys of the Tessera/Constellation identities this tx is intended for.
-	IsUsingPrivacyPrecompile bool
 }
 
 // FilterOpts is the collection of options to fine tune filtering for events
@@ -85,6 +84,29 @@ type FilterOpts struct {
 type WatchOpts struct {
 	Start   *uint64         // Start of the queried range (nil = latest)
 	Context context.Context // Network context to support cancellation and timeouts (nil = no timeout)
+}
+
+// MetaData collects all metadata for a bound contract.
+type MetaData struct {
+	mu   sync.Mutex
+	Sigs map[string]string
+	Bin  string
+	ABI  string
+	ab   *abi.ABI
+}
+
+func (m *MetaData) GetAbi() (*abi.ABI, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ab != nil {
+		return m.ab, nil
+	}
+	if parsed, err := abi.JSON(strings.NewReader(m.ABI)); err != nil {
+		return nil, err
+	} else {
+		m.ab = &parsed
+	}
+	return m.ab, nil
 }
 
 // BoundContract is the base wrapper object that reflects a contract on the
@@ -157,9 +179,29 @@ func (c *BoundContract) Call(opts *CallOpts, results *[]interface{}, method stri
 			return ErrNoPendingState
 		}
 		output, err = pb.PendingCallContract(ctx, msg)
-		if err == nil && len(output) == 0 {
+		if err != nil {
+			return err
+		}
+		if len(output) == 0 {
 			// Make sure we have a contract to operate on, and bail out otherwise.
 			if code, err = pb.PendingCodeAt(ctx, c.address); err != nil {
+				return err
+			} else if len(code) == 0 {
+				return ErrNoCode
+			}
+		}
+	} else if opts.BlockHash != (common.Hash{}) {
+		bh, ok := c.caller.(BlockHashContractCaller)
+		if !ok {
+			return ErrNoBlockHashState
+		}
+		output, err = bh.CallContractAtHash(ctx, msg, opts.BlockHash)
+		if err != nil {
+			return err
+		}
+		if len(output) == 0 {
+			// Make sure we have a contract to operate on, and bail out otherwise.
+			if code, err = bh.CodeAtHash(ctx, c.address, opts.BlockHash); err != nil {
 				return err
 			} else if len(code) == 0 {
 				return ErrNoCode
@@ -217,77 +259,160 @@ func (c *BoundContract) Transfer(opts *TransactOpts) (*types.Transaction, error)
 	return c.transact(opts, &c.address, nil)
 }
 
-// transact executes an actual transaction invocation, first deriving any missing
-// authorization fields, and then scheduling the transaction for execution.
-func (c *BoundContract) transact(opts *TransactOpts, contract *common.Address, input []byte) (*types.Transaction, error) {
-	var err error
-
-	// Ensure a valid value field and resolve the account nonce
+func (c *BoundContract) createDynamicTx(opts *TransactOpts, contract *common.Address, input []byte, head *types.Header) (*types.Transaction, error) {
+	// Normalize value
 	value := opts.Value
 	if value == nil {
 		value = new(big.Int)
 	}
-	var nonce uint64
-	if opts.Nonce == nil {
-		nonce, err = c.transactor.PendingNonceAt(ensureContext(opts.Context), opts.From)
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve account nonce: %v", err)
-		}
-	} else {
-		nonce = opts.Nonce.Uint64()
-	}
-	// Figure out the gas allowance and gas price values
-	gasPrice := opts.GasPrice
-	if gasPrice == nil {
-		gasPrice, err = c.transactor.SuggestGasPrice(ensureContext(opts.Context))
-		if err != nil {
-			return nil, fmt.Errorf("failed to suggest gas price: %v", err)
-		}
-	}
-	gasLimit := opts.GasLimit
-	if gasLimit == 0 {
-		// Gas estimation cannot succeed without code for method invocations
-		if contract != nil {
-			if code, err := c.transactor.PendingCodeAt(ensureContext(opts.Context), c.address); err != nil {
-				return nil, err
-			} else if len(code) == 0 {
-				return nil, ErrNoCode
-			}
-		}
-		// If the contract surely has code (or code is not needed), estimate the transaction
-		msg := ethereum.CallMsg{From: opts.From, To: contract, GasPrice: gasPrice, Value: value, Data: input}
-		gasLimit, err = c.transactor.EstimateGas(ensureContext(opts.Context), msg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to estimate gas needed: %v", err)
-		}
-	}
-	// Create the transaction, sign it and schedule it for execution
-	var rawTx *types.Transaction
-	if contract == nil {
-		rawTx = types.NewContractCreation(nonce, value, gasLimit, gasPrice, input)
-	} else {
-		rawTx = types.NewTransaction(nonce, c.address, value, gasLimit, gasPrice, input)
-	}
-
-	// Quorum
-	// If this transaction is private, we need to substitute the data payload
-	// with the hash of the transaction from tessera/constellation.
-	if opts.PrivateFor != nil {
-		var payload []byte
-		hash, err := c.transactor.PreparePrivateTransaction(rawTx.Data(), opts.PrivateFrom)
+	// Estimate TipCap
+	gasTipCap := opts.GasTipCap
+	if gasTipCap == nil {
+		tip, err := c.transactor.SuggestGasTipCap(ensureContext(opts.Context))
 		if err != nil {
 			return nil, err
 		}
-		payload = hash.Bytes()
-		rawTx = c.createPrivateTransaction(rawTx, payload)
-
-		if opts.IsUsingPrivacyPrecompile {
-			rawTx, _ = c.createMarkerTx(opts, rawTx, PrivateTxArgs{PrivateFor: opts.PrivateFor})
-			opts.PrivateFor = nil
+		gasTipCap = tip
+	}
+	// Estimate FeeCap
+	gasFeeCap := opts.GasFeeCap
+	if gasFeeCap == nil {
+		gasFeeCap = new(big.Int).Add(
+			gasTipCap,
+			new(big.Int).Mul(head.BaseFee, big.NewInt(basefeeWiggleMultiplier)),
+		)
+	}
+	if gasFeeCap.Cmp(gasTipCap) < 0 {
+		return nil, fmt.Errorf("maxFeePerGas (%v) < maxPriorityFeePerGas (%v)", gasFeeCap, gasTipCap)
+	}
+	// Estimate GasLimit
+	gasLimit := opts.GasLimit
+	if opts.GasLimit == 0 {
+		var err error
+		gasLimit, err = c.estimateGasLimit(opts, contract, input, nil, gasTipCap, gasFeeCap, value)
+		if err != nil {
+			return nil, err
 		}
 	}
+	// create the transaction
+	nonce, err := c.getNonce(opts)
+	if err != nil {
+		return nil, err
+	}
+	baseTx := &types.DynamicFeeTx{
+		To:        contract,
+		Nonce:     nonce,
+		GasFeeCap: gasFeeCap,
+		GasTipCap: gasTipCap,
+		Gas:       gasLimit,
+		Value:     value,
+		Data:      input,
+	}
+	return types.NewTx(baseTx), nil
+}
 
-	// Choose signer to sign transaction
+func (c *BoundContract) createLegacyTx(opts *TransactOpts, contract *common.Address, input []byte) (*types.Transaction, error) {
+	if opts.GasFeeCap != nil || opts.GasTipCap != nil {
+		return nil, errors.New("maxFeePerGas or maxPriorityFeePerGas specified but london is not active yet")
+	}
+	// Normalize value
+	value := opts.Value
+	if value == nil {
+		value = new(big.Int)
+	}
+	// Estimate GasPrice
+	gasPrice := opts.GasPrice
+	if gasPrice == nil {
+		price, err := c.transactor.SuggestGasPrice(ensureContext(opts.Context))
+		if err != nil {
+			return nil, err
+		}
+		gasPrice = price
+	}
+	// Estimate GasLimit
+	gasLimit := opts.GasLimit
+	if opts.GasLimit == 0 {
+		var err error
+		gasLimit, err = c.estimateGasLimit(opts, contract, input, gasPrice, nil, nil, value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// create the transaction
+	nonce, err := c.getNonce(opts)
+	if err != nil {
+		return nil, err
+	}
+	baseTx := &types.LegacyTx{
+		To:       contract,
+		Nonce:    nonce,
+		GasPrice: gasPrice,
+		Gas:      gasLimit,
+		Value:    value,
+		Data:     input,
+	}
+	return types.NewTx(baseTx), nil
+}
+
+func (c *BoundContract) estimateGasLimit(opts *TransactOpts, contract *common.Address, input []byte, gasPrice, gasTipCap, gasFeeCap, value *big.Int) (uint64, error) {
+	if contract != nil {
+		// Gas estimation cannot succeed without code for method invocations.
+		if code, err := c.transactor.PendingCodeAt(ensureContext(opts.Context), c.address); err != nil {
+			return 0, err
+		} else if len(code) == 0 {
+			return 0, ErrNoCode
+		}
+	}
+	msg := ethereum.CallMsg{
+		From:      opts.From,
+		To:        contract,
+		GasPrice:  gasPrice,
+		GasTipCap: gasTipCap,
+		GasFeeCap: gasFeeCap,
+		Value:     value,
+		Data:      input,
+	}
+	return c.transactor.EstimateGas(ensureContext(opts.Context), msg)
+}
+
+func (c *BoundContract) getNonce(opts *TransactOpts) (uint64, error) {
+	if opts.Nonce == nil {
+		return c.transactor.PendingNonceAt(ensureContext(opts.Context), opts.From)
+	} else {
+		return opts.Nonce.Uint64(), nil
+	}
+}
+
+// transact executes an actual transaction invocation, first deriving any missing
+// authorization fields, and then scheduling the transaction for execution.
+func (c *BoundContract) transact(opts *TransactOpts, contract *common.Address, input []byte) (*types.Transaction, error) {
+	if opts.GasPrice != nil && (opts.GasFeeCap != nil || opts.GasTipCap != nil) {
+		return nil, errors.New("both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified")
+	}
+	// Create the transaction
+	var (
+		rawTx *types.Transaction
+		err   error
+	)
+	if opts.GasPrice != nil {
+		rawTx, err = c.createLegacyTx(opts, contract, input)
+	} else if opts.GasFeeCap != nil && opts.GasTipCap != nil {
+		rawTx, err = c.createDynamicTx(opts, contract, input, nil)
+	} else {
+		// Only query for basefee if gasPrice not specified
+		if head, errHead := c.transactor.HeaderByNumber(ensureContext(opts.Context), nil); errHead != nil {
+			return nil, errHead
+		} else if head.BaseFee != nil {
+			rawTx, err = c.createDynamicTx(opts, contract, input, head)
+		} else {
+			// Chain is not London ready -> use legacy transaction
+			rawTx, err = c.createLegacyTx(opts, contract, input)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Sign the transaction and schedule it for execution
 	if opts.Signer == nil {
 		return nil, errors.New("no signer to authorize the transaction with")
 	}
@@ -298,7 +423,7 @@ func (c *BoundContract) transact(opts *TransactOpts, contract *common.Address, i
 	if opts.NoSend {
 		return signedTx, nil
 	}
-	if err := c.transactor.SendTransaction(ensureContext(opts.Context), signedTx, PrivateTxArgs{PrivateFor: opts.PrivateFor}); err != nil {
+	if err := c.transactor.SendTransaction(ensureContext(opts.Context), signedTx); err != nil {
 		return nil, err
 	}
 	return signedTx, nil
@@ -386,6 +511,13 @@ func (c *BoundContract) WatchLogs(opts *WatchOpts, name string, query ...[]inter
 
 // UnpackLog unpacks a retrieved log into the provided output structure.
 func (c *BoundContract) UnpackLog(out interface{}, event string, log types.Log) error {
+	// Anonymous events are not supported.
+	if len(log.Topics) == 0 {
+		return errNoEventSignature
+	}
+	if log.Topics[0] != c.abi.Events[event].ID {
+		return errEventSignatureMismatch
+	}
 	if len(log.Data) > 0 {
 		if err := c.abi.UnpackIntoInterface(out, event, log.Data); err != nil {
 			return err
@@ -402,6 +534,13 @@ func (c *BoundContract) UnpackLog(out interface{}, event string, log types.Log) 
 
 // UnpackLogIntoMap unpacks a retrieved log into the provided map.
 func (c *BoundContract) UnpackLogIntoMap(out map[string]interface{}, event string, log types.Log) error {
+	// Anonymous events are not supported.
+	if len(log.Topics) == 0 {
+		return errNoEventSignature
+	}
+	if log.Topics[0] != c.abi.Events[event].ID {
+		return errEventSignatureMismatch
+	}
 	if len(log.Data) > 0 {
 		if err := c.abi.UnpackIntoMap(out, event, log.Data); err != nil {
 			return err
@@ -416,49 +555,11 @@ func (c *BoundContract) UnpackLogIntoMap(out map[string]interface{}, event strin
 	return abi.ParseTopicsIntoMap(out, indexed, log.Topics[1:])
 }
 
-// Quorum
-// createPrivateTransaction replaces the payload of private transaction to the hash from Tessera/Constellation
-func (c *BoundContract) createPrivateTransaction(tx *types.Transaction, payload []byte) *types.Transaction {
-	var privateTx *types.Transaction
-	if tx.To() == nil {
-		privateTx = types.NewContractCreation(tx.Nonce(), tx.Value(), tx.Gas(), tx.GasPrice(), payload)
-	} else {
-		privateTx = types.NewTransaction(tx.Nonce(), c.address, tx.Value(), tx.Gas(), tx.GasPrice(), payload)
-	}
-	privateTx.SetPrivate()
-	return privateTx
-}
-
-// (Quorum) createMarkerTx creates a new public privacy marker transaction for the given private tx, distributing tx to the specified privateFor recipients
-func (c *BoundContract) createMarkerTx(opts *TransactOpts, tx *types.Transaction, args PrivateTxArgs) (*types.Transaction, error) {
-	// Choose signer to sign transaction
-	if opts.Signer == nil {
-		return nil, errors.New("no signer to authorize the transaction with")
-	}
-	signedTx, err := opts.Signer(opts.From, tx)
-	if err != nil {
-		return nil, err
-	}
-
-	hash, err := c.transactor.DistributeTransaction(ensureContext(opts.Context), signedTx, args)
-	if err != nil {
-		return nil, err
-	}
-
-	// Note: using isHomestead and isEIP2028 set to true, which may give a slightly higher gas value (but avoids making an API call to get the block number)
-	intrinsicGas, err := core.IntrinsicGas(common.FromHex(hash), tx.AccessList(), false, true, true)
-	if err != nil {
-		return nil, err
-	}
-
-	return types.NewTransaction(signedTx.Nonce(), common.QuorumPrivacyPrecompileContractAddress(), tx.Value(), intrinsicGas, tx.GasPrice(), common.FromHex(hash)), nil
-}
-
 // ensureContext is a helper method to ensure a context is not nil, even if the
 // user specified it as such.
 func ensureContext(ctx context.Context) context.Context {
 	if ctx == nil {
-		return context.TODO()
+		return context.Background()
 	}
 	return ctx
 }

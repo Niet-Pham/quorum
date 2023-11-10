@@ -36,12 +36,12 @@ var mockerList = map[string]func(net *Network, quit chan struct{}, nodeCount int
 	"boot":          boot,
 }
 
-// Lookup a mocker by its name, returns the mockerFn
+// LookupMocker looks a mocker by its name, returns the mockerFn
 func LookupMocker(mockerType string) func(net *Network, quit chan struct{}, nodeCount int) {
 	return mockerList[mockerType]
 }
 
-// Get a list of mockers (keys of the map)
+// GetMockerList returns a list of mockers (keys of the map)
 // Useful for frontend to build available mocker selection
 func GetMockerList() []string {
 	list := make([]string, 0, len(mockerList))
@@ -123,20 +123,12 @@ func probabilistic(net *Network, quit chan struct{}, nodeCount int) {
 		randWait := time.Duration(rand.Intn(5000)+1000) * time.Millisecond
 		rand1 := rand.Intn(nodeCount - 1)
 		rand2 := rand.Intn(nodeCount - 1)
-		if rand1 < rand2 {
+		if rand1 <= rand2 {
 			lowid = rand1
 			highid = rand2
 		} else if rand1 > rand2 {
 			highid = rand1
 			lowid = rand2
-		} else {
-			if rand1 == 0 {
-				rand2 = 9
-			} else if rand1 == 9 {
-				rand1 = 0
-			}
-			lowid = rand1
-			highid = rand2
 		}
 		var steps = highid - lowid
 		wg.Add(steps)

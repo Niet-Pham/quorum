@@ -26,11 +26,13 @@ var (
 	// ErrKnownBlock is returned when a block to import is already known locally.
 	ErrKnownBlock = errors.New("block already known")
 
-	// ErrBlacklistedHash is returned if a block to import is on the blacklist.
-	ErrBlacklistedHash = errors.New("blacklisted hash")
+	// ErrBannedHash is returned if a block to import is on the banned list.
+	ErrBannedHash = errors.New("banned hash")
 
 	// ErrNoGenesis is returned when there is no Genesis Block.
 	ErrNoGenesis = errors.New("genesis not found in chain")
+
+	errSideChainReceipts = errors.New("side blocks can't be accepted as ancient chain data")
 )
 
 // List of evm-call-message pre-checking errors. All state transition messages will
@@ -49,6 +51,10 @@ var (
 	// next one expected based on the local chain.
 	ErrNonceTooHigh = errors.New("nonce too high")
 
+	// ErrNonceMax is returned if the nonce of a transaction sender account has
+	// maximum allowed value and would become invalid if incremented.
+	ErrNonceMax = errors.New("nonce has max value")
+
 	// ErrGasLimitReached is returned by the gas pool if the amount of gas required
 	// by a transaction is higher than what's left in the block.
 	ErrGasLimitReached = errors.New("gas limit reached")
@@ -56,6 +62,10 @@ var (
 	// ErrInsufficientFundsForTransfer is returned if the transaction sender doesn't
 	// have enough funds for transfer(topmost call only).
 	ErrInsufficientFundsForTransfer = errors.New("insufficient funds for transfer")
+
+	// ErrMaxInitCodeSizeExceeded is returned if creation transaction provides the init code bigger
+	// than init code size limit.
+	ErrMaxInitCodeSizeExceeded = errors.New("max initcode size exceeded")
 
 	// ErrInsufficientFunds is returned if the total cost of executing a transaction
 	// is higher than the balance of the user's account.
@@ -72,20 +82,26 @@ var (
 	// current network configuration.
 	ErrTxTypeNotSupported = types.ErrTxTypeNotSupported
 
-	// Quorum
-	// ErrAbortBlocksProcessing is returned if bc.insertChain is interrupted under raft mode
-	ErrAbortBlocksProcessing = errors.New("abort during blocks processing")
+	// ErrTipAboveFeeCap is a sanity error to ensure no one is able to specify a
+	// transaction with a tip higher than the total fee cap.
+	ErrTipAboveFeeCap = errors.New("max priority fee per gas higher than max fee per gas")
 
-	// ErrContractManagedPartiesCheckFailed is returned if managed parties check has failed for contract
-	ErrContractManagedPartiesCheckFailed = errors.New("managed parties check has failed for contract")
+	// ErrTipVeryHigh is a sanity error to avoid extremely big numbers specified
+	// in the tip field.
+	ErrTipVeryHigh = errors.New("max priority fee per gas higher than 2^256-1")
 
-	// ErrPrivacyMetadataInvalidMerkleRoot is returned if there is an empty MR during the pmh.prepare(...)
-	ErrPrivacyMetadataInvalidMerkleRoot = errors.New("privacy metadata has empty MR for stateValidation flag")
+	// ErrFeeCapVeryHigh is a sanity error to avoid extremely big numbers specified
+	// in the fee cap field.
+	ErrFeeCapVeryHigh = errors.New("max fee per gas higher than 2^256-1")
 
-	// ErrPrivacyEnhancedReceivedWhenDisabled is returned if privacy enhanced transaction received while privacy enhancements are disabled
-	ErrPrivacyEnhancedReceivedWhenDisabled = errors.New("privacy metadata has empty MR for stateValidation flag")
+	// ErrFeeCapTooLow is returned if the transaction fee cap is less than the
+	// base fee of the block.
+	ErrFeeCapTooLow = errors.New("max fee per gas less than block base fee")
 
-	// ErrPrivateContractInteractionVerificationFailed is returned if the verification of contract interaction differs from the one returned by Tessera (check pmh.verify(...))
-	ErrPrivateContractInteractionVerificationFailed = errors.New("verification of contract interaction differs from the one returned by Tessera")
-	// End Quorum
+	// ErrSenderNoEOA is returned if the sender of a transaction is a contract.
+	ErrSenderNoEOA = errors.New("sender not an eoa")
+
+	// ErrBlobFeeCapTooLow is returned if the transaction fee cap is less than the
+	// blob gas fee of the block.
+	ErrBlobFeeCapTooLow = errors.New("max fee per blob gas less than block blob gas fee")
 )

@@ -20,12 +20,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/ethereum/go-ethereum/core/types"
 )
 
 func newTestServer() *Server {
@@ -67,17 +64,23 @@ type echoResult struct {
 	Args   *echoArgs
 }
 
-type echoPSIResult struct {
-	PSI types.PrivateStateIdentifier
-}
-
 type testError struct{}
 
 func (testError) Error() string          { return "testError" }
 func (testError) ErrorCode() int         { return 444 }
 func (testError) ErrorData() interface{} { return "testError data" }
 
+type MarshalErrObj struct{}
+
+func (o *MarshalErrObj) MarshalText() ([]byte, error) {
+	return nil, errors.New("marshal error")
+}
+
 func (s *testService) NoArgsRets() {}
+
+func (s *testService) Null() any {
+	return nil
+}
 
 func (s *testService) Echo(str string, i int, args *echoArgs) echoResult {
 	return echoResult{str, i, args}
@@ -87,16 +90,12 @@ func (s *testService) EchoWithCtx(ctx context.Context, str string, i int, args *
 	return echoResult{str, i, args}
 }
 
-func (s *testService) EchoCtxId(ctx context.Context) interface{} {
-	return ctx.Value("id")
+func (s *testService) Repeat(msg string, i int) string {
+	return strings.Repeat(msg, i)
 }
 
-func (s *testService) EchoCtxPSI(ctx context.Context) (echoPSIResult, error) {
-	value := ctx.Value(ctxPrivateStateIdentifier)
-	if value == nil {
-		return echoPSIResult{}, fmt.Errorf("no PSI found in the context")
-	}
-	return echoPSIResult{PSI: value.(types.PrivateStateIdentifier)}, nil
+func (s *testService) PeerInfo(ctx context.Context) PeerInfo {
+	return PeerInfoFromContext(ctx)
 }
 
 func (s *testService) Sleep(ctx context.Context, duration time.Duration) {
@@ -127,6 +126,14 @@ func (s *testService) InvalidRets3() (string, string, error) {
 
 func (s *testService) ReturnError() error {
 	return testError{}
+}
+
+func (s *testService) MarshalError() *MarshalErrObj {
+	return &MarshalErrObj{}
+}
+
+func (s *testService) Panic() string {
+	panic("service panic")
 }
 
 func (s *testService) CallMeBack(ctx context.Context, method string, args []interface{}) (interface{}, error) {

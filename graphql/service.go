@@ -17,16 +17,19 @@
 package graphql
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"sync"
+	"time"
 
-	"github.com/ethereum/go-ethereum/eth"
+	"github.com/ethereum/go-ethereum/eth/filters"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/plugin/security"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/graph-gophers/graphql-go"
+	gqlErrors "github.com/graph-gophers/graphql-go/errors"
 )
 
 type handler struct {
@@ -44,115 +47,86 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := h.Schema.Exec(r.Context(), params.Query, params.OperationName, params.Variables)
-	responseJSON, err := json.Marshal(response)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if len(response.Errors) > 0 {
-		w.WriteHeader(http.StatusBadRequest)
+	var (
+		ctx       = r.Context()
+		responded sync.Once
+		timer     *time.Timer
+		cancel    context.CancelFunc
+	)
+	ctx, cancel = context.WithCancel(ctx)
+	defer cancel()
+
+	if timeout, ok := rpc.ContextRequestTimeout(ctx); ok {
+		timer = time.AfterFunc(timeout, func() {
+			responded.Do(func() {
+				// Cancel request handling.
+				cancel()
+
+				// Create the timeout response.
+				response := &graphql.Response{
+					Errors: []*gqlErrors.QueryError{{Message: "request timed out"}},
+				}
+				responseJSON, err := json.Marshal(response)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				// Setting this disables gzip compression in package node.
+				w.Header().Set("Transfer-Encoding", "identity")
+
+				// Flush the response. Since we are writing close to the response timeout,
+				// chunked transfer encoding must be disabled by setting content-length.
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Length", strconv.Itoa(len(responseJSON)))
+				w.Write(responseJSON)
+				if flush, ok := w.(http.Flusher); ok {
+					flush.Flush()
+				}
+			})
+		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(responseJSON)
+	response := h.Schema.Exec(ctx, params.Query, params.OperationName, params.Variables)
+	if timer != nil {
+		timer.Stop()
+	}
+	responded.Do(func() {
+		responseJSON, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if len(response.Errors) > 0 {
+			w.WriteHeader(http.StatusBadRequest)
+		}
+		w.Write(responseJSON)
+	})
 }
 
 // New constructs a new GraphQL service instance.
-func New(stack *node.Node, backend ethapi.Backend, cors, vhosts []string) error {
-	if backend == nil {
-		panic("missing backend")
-	}
-	// check if http server with given endpoint exists and enable graphQL on it
-	return newHandler(stack, backend, cors, vhosts)
+func New(stack *node.Node, backend ethapi.Backend, filterSystem *filters.FilterSystem, cors, vhosts []string) error {
+	_, err := newHandler(stack, backend, filterSystem, cors, vhosts)
+	return err
 }
 
 // newHandler returns a new `http.Handler` that will answer GraphQL queries.
 // It additionally exports an interactive query browser on the / endpoint.
-func newHandler(stack *node.Node, backend ethapi.Backend, cors, vhosts []string) error {
-	q := Resolver{backend}
+func newHandler(stack *node.Node, backend ethapi.Backend, filterSystem *filters.FilterSystem, cors, vhosts []string) (*handler, error) {
+	q := Resolver{backend, filterSystem}
 
 	s, err := graphql.ParseSchema(schema, &q)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	h := handler{Schema: s}
-	// Quorum
-	// we wrap the handler with security logic to support
-	// auth/authz and multiple private states handling
-	// as GraphQL handler is created before services start
-	// so we need to defer the authManagerFunc creation in the later call.
-	authManagerFunc := func() (security.AuthenticationManager, error) {
-		// Obtain the authentication manager for the handler to deal with rpc security
-		_, auth, err := stack.GetSecuritySupports()
-		if err != nil {
-			return nil, err
-		}
-		if auth == nil {
-			return security.NewDisabledAuthenticationManager(), nil
-		}
-		return auth, err
-	}
-	handler := &secureHandler{
-		authManagerFunc: authManagerFunc,
-		isMultitenant:   stack.Config().EnableMultitenancy,
-		protectedMethod: "graphql_*", // this follows JSON RPC convention using namespace graphql
-		delegate:        node.NewHTTPHandlerStack(h, cors, vhosts),
-	}
-	// need to obtain eth service in order to know if MPS is enabled
-	isMPS := false
-	var ethereum *eth.Ethereum
-	if err := stack.Lifecycle(&ethereum); err != nil {
-		log.Warn("Eth service is not ready yet", "error", err)
-	} else {
-		isMPS = ethereum.BlockChain().Config().IsMPS
-	}
-	stack.RegisterHandler("GraphQL UI", "/graphql/ui", GraphiQL{
-		authManagerFunc: authManagerFunc,
-		isMPS:           isMPS,
-	})
+	handler := node.NewHTTPHandlerStack(h, cors, vhosts, nil)
+
+	stack.RegisterHandler("GraphQL UI", "/graphql/ui", GraphiQL{})
+	stack.RegisterHandler("GraphQL UI", "/graphql/ui/", GraphiQL{})
 	stack.RegisterHandler("GraphQL", "/graphql", handler)
 	stack.RegisterHandler("GraphQL", "/graphql/", handler)
 
-	return nil
-}
-
-// Quorum
-//
-// secureHandler wraps around the http handler in order to perform rpc security
-// and propagate the PSI into the request context.
-type secureHandler struct {
-	delegate        http.Handler
-	protectedMethod string
-	authManagerFunc security.AuthenticationManagerDeferFunc
-	isMultitenant   bool
-}
-
-func (h *secureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	authManager, err := h.authManagerFunc()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	securityContext := rpc.WithIsMultitenant(r.Context(), h.isMultitenant)
-	// authentication check
-	securityContext = rpc.AuthenticateHttpRequest(securityContext, r, authManager)
-	// authorization check
-	securedCtx, err := rpc.SecureCall(&securityContextHolder{ctx: securityContext}, h.protectedMethod)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
-		return
-	}
-	h.delegate.ServeHTTP(w, r.WithContext(securedCtx))
-}
-
-// Quorum
-// securityContextHolder stores a context so it can be retrieved later
-// via rpc.SecurityContextResolver interface
-type securityContextHolder struct {
-	ctx rpc.SecurityContext
-}
-
-func (sh *securityContextHolder) Resolve() rpc.SecurityContext {
-	return sh.ctx
+	return &h, nil
 }

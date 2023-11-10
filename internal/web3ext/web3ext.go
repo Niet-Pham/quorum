@@ -14,65 +14,24 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-// package web3ext contains geth specific web3.js extensions.
+// Package web3ext contains geth specific web3.js extensions.
 package web3ext
 
 var Modules = map[string]string{
-	"accounting": AccountingJs,
-	"admin":      AdminJs,
-	"chequebook": ChequebookJs,
-	"clique":     CliqueJs,
-	"ethash":     EthashJs,
-	"debug":      DebugJs,
-	"eth":        EthJs,
-	"miner":      MinerJs,
-	"net":        NetJs,
-	"personal":   PersonalJs,
-	"rpc":        RpcJs,
-	"shh":        ShhJs,
-	"swarmfs":    SwarmfsJs,
-	"txpool":     TxpoolJs,
-	"les":        LESJs,
-	"vflux":      VfluxJs,
-	// Quorum
-	"raft":             Raft_JS,
-	"istanbul":         Istanbul_JS,
-	"quorumPermission": QUORUM_NODE_JS,
-	"quorumExtension":  Extension_JS,
-	"plugin_account":   Account_Plugin_Js,
-	"qlight":           QLight_JS,
+	"admin":    AdminJs,
+	"clique":   CliqueJs,
+	"ethash":   EthashJs,
+	"debug":    DebugJs,
+	"eth":      EthJs,
+	"miner":    MinerJs,
+	"net":      NetJs,
+	"personal": PersonalJs,
+	"rpc":      RpcJs,
+	"txpool":   TxpoolJs,
+	"les":      LESJs,
+	"vflux":    VfluxJs,
+	"dev":      DevJs,
 }
-
-const ChequebookJs = `
-web3._extend({
-	property: 'chequebook',
-	methods: [
-		new web3._extend.Method({
-			name: 'deposit',
-			call: 'chequebook_deposit',
-			params: 1,
-			inputFormatter: [null]
-		}),
-		new web3._extend.Property({
-			name: 'balance',
-			getter: 'chequebook_balance',
-			outputFormatter: web3._extend.utils.toDecimal
-		}),
-		new web3._extend.Method({
-			name: 'cash',
-			call: 'chequebook_cash',
-			params: 1,
-			inputFormatter: [null]
-		}),
-		new web3._extend.Method({
-			name: 'issue',
-			call: 'chequebook_issue',
-			params: 2,
-			inputFormatter: [null, null]
-		}),
-	]
-});
-`
 
 const CliqueJs = `
 web3._extend({
@@ -113,8 +72,13 @@ web3._extend({
 		new web3._extend.Method({
 			name: 'status',
 			call: 'clique_status',
-			params: 2,
-            inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter, web3._extend.formatters.inputBlockNumberFormatter]
+			params: 0
+		}),
+		new web3._extend.Method({
+			name: 'getSigner',
+			call: 'clique_getSigner',
+			params: 1,
+			inputFormatter: [null]
 		}),
 	],
 	properties: [
@@ -158,11 +122,6 @@ const AdminJs = `
 web3._extend({
 	property: 'admin',
 	methods: [
-		new web3._extend.Method({
-			name: 'reloadPlugin',
-			call: 'admin_reloadPlugin',
-			params: 1
-		}),
 		new web3._extend.Method({
 			name: 'addPeer',
 			call: 'admin_addPeer',
@@ -238,16 +197,8 @@ web3._extend({
 			getter: 'admin_nodeInfo'
 		}),
 		new web3._extend.Property({
-			name: 'qnodeInfo',
-			getter: 'admin_qnodeInfo'
-		}),
-		new web3._extend.Property({
 			name: 'peers',
 			getter: 'admin_peers'
-		}),
-		new web3._extend.Property({
-			name: 'qpeers',
-			getter: 'admin_qpeers'
 		}),
 		new web3._extend.Property({
 			name: 'datadir',
@@ -274,15 +225,24 @@ web3._extend({
 			outputFormatter: console.log
 		}),
 		new web3._extend.Method({
-			name: 'getBlockRlp',
-			call: 'debug_getBlockRlp',
+			name: 'getRawHeader',
+			call: 'debug_getRawHeader',
 			params: 1
 		}),
 		new web3._extend.Method({
-			name: 'testSignCliqueBlock',
-			call: 'debug_testSignCliqueBlock',
-			params: 2,
-			inputFormatter: [web3._extend.formatters.inputAddressFormatter, null],
+			name: 'getRawBlock',
+			call: 'debug_getRawBlock',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'getRawReceipts',
+			call: 'debug_getRawReceipts',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'getRawTransaction',
+			call: 'debug_getRawTransaction',
+			params: 1
 		}),
 		new web3._extend.Method({
 			name: 'setHead',
@@ -297,26 +257,8 @@ web3._extend({
 		new web3._extend.Method({
 			name: 'dumpBlock',
 			call: 'debug_dumpBlock',
-			params: 2,
-			inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter, null]
-		}),
-		new web3._extend.Method({
-			name: 'privateStateRoot',
-			call: 'debug_privateStateRoot',
 			params: 1,
 			inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter]
-		}),
-		new web3._extend.Method({
-			name: 'defaultStateRoot',
-			call: 'debug_defaultStateRoot',
-			params: 1,
-			inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter]
-		}),
-		new web3._extend.Method({
-			name: 'dumpAddress',
-			call: 'debug_dumpAddress',
-			params: 2,
-			inputFormatter: [web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputBlockNumberFormatter]
 		}),
 		new web3._extend.Method({
 			name: 'chaindbProperty',
@@ -346,7 +288,8 @@ web3._extend({
 		new web3._extend.Method({
 			name: 'stacks',
 			call: 'debug_stacks',
-			params: 0,
+			params: 1,
+			inputFormatter: [null],
 			outputFormatter: console.log
 		}),
 		new web3._extend.Method({
@@ -459,6 +402,12 @@ web3._extend({
 			inputFormatter: [null, null]
 		}),
 		new web3._extend.Method({
+			name: 'intermediateRoots',
+			call: 'debug_intermediateRoots',
+			params: 2,
+			inputFormatter: [null, null]
+		}),
+		new web3._extend.Method({
 			name: 'standardTraceBlockToFile',
 			call: 'debug_standardTraceBlockToFile',
 			params: 2,
@@ -521,6 +470,37 @@ web3._extend({
 			call: 'debug_freezeClient',
 			params: 1,
 		}),
+		new web3._extend.Method({
+			name: 'getAccessibleState',
+			call: 'debug_getAccessibleState',
+			params: 2,
+			inputFormatter:[web3._extend.formatters.inputBlockNumberFormatter, web3._extend.formatters.inputBlockNumberFormatter],
+		}),
+		new web3._extend.Method({
+			name: 'dbGet',
+			call: 'debug_dbGet',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'dbAncient',
+			call: 'debug_dbAncient',
+			params: 2
+		}),
+		new web3._extend.Method({
+			name: 'dbAncients',
+			call: 'debug_dbAncients',
+			params: 0
+		}),
+		new web3._extend.Method({
+			name: 'setTrieFlushInterval',
+			call: 'debug_setTrieFlushInterval',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'getTrieFlushInterval',
+			call: 'debug_getTrieFlushInterval',
+			params: 0
+		}),
 	],
 	properties: []
 });
@@ -530,28 +510,6 @@ const EthJs = `
 web3._extend({
 	property: 'eth',
 	methods: [
-		new web3._extend.Method({
-			name: 'sendRawPrivateTransaction',
-			call: 'eth_sendRawPrivateTransaction',
-			params: 2,
-			inputFormatter: [null, null]
-		}),
-		new web3._extend.Method({
-			name: 'distributePrivateTransaction',
-			call: 'eth_distributePrivateTransaction',
-			params: 2,
-			inputFormatter: [null, null]
-		}),
-		new web3._extend.Method({
-			name: 'getPrivacyPrecompileAddress',
-			call: 'eth_getPrivacyPrecompileAddress',
-			params: 0,
-		}),
-		new web3._extend.Method({
-			name: 'getContractPrivacyMetadata',
-			call: 'eth_getContractPrivacyMetadata',
-			params: 1
-		}),
 		new web3._extend.Method({
 			name: 'chainId',
 			call: 'eth_chainId',
@@ -578,8 +536,8 @@ web3._extend({
 		new web3._extend.Method({
 			name: 'estimateGas',
 			call: 'eth_estimateGas',
-			params: 2,
-			inputFormatter: [web3._extend.formatters.inputCallFormatter, web3._extend.formatters.inputBlockNumberFormatter],
+			params: 3,
+			inputFormatter: [web3._extend.formatters.inputCallFormatter, web3._extend.formatters.inputBlockNumberFormatter, null],
 			outputFormatter: web3._extend.utils.toDecimal
 		}),
 		new web3._extend.Method({
@@ -642,49 +600,28 @@ web3._extend({
 			params: 2,
 			inputFormatter: [null, web3._extend.formatters.inputBlockNumberFormatter],
 		}),
-		// QUORUM
 		new web3._extend.Method({
-			name: 'sendTransactionAsync',
-			call: 'eth_sendTransactionAsync',
+			name: 'feeHistory',
+			call: 'eth_feeHistory',
+			params: 3,
+			inputFormatter: [null, web3._extend.formatters.inputBlockNumberFormatter, null]
+		}),
+		new web3._extend.Method({
+			name: 'getLogs',
+			call: 'eth_getLogs',
 			params: 1,
-			inputFormatter: [web3._extend.formatters.inputTransactionFormatter]
 		}),
 		new web3._extend.Method({
-			name: 'getQuorumPayload',
-			call: 'eth_getQuorumPayload',
+			name: 'call',
+			call: 'eth_call',
+			params: 4,
+			inputFormatter: [web3._extend.formatters.inputCallFormatter, web3._extend.formatters.inputDefaultBlockNumberFormatter, null, null],
+		}),
+		new web3._extend.Method({
+			name: 'getBlockReceipts',
+			call: 'eth_getBlockReceipts',
 			params: 1,
-			inputFormatter: [null]
 		}),
-		new web3._extend.Method({
-			name: 'getQuorumPayloadExtra',
-			call: 'eth_getQuorumPayloadExtra',
-			params: 1,
-			inputFormatter: [null]
-		}),
-		new web3._extend.Method({
-			name: 'decryptQuorumPayload',
-			call: 'eth_decryptQuorumPayload',
-			params: 1,
-			inputFormatter: [null]
-		}),
-		new web3._extend.Method({
-			name: 'getPSI',
-			call: 'eth_getPSI',
-			params: 0
-		}),
-		new web3._extend.Method({
-            name: 'getPrivateTransaction',
-            call: 'eth_getPrivateTransactionByHash',
-            params: 1,
-            outputFormatter: web3._extend.formatters.outputTransactionFormatter
-        }),
-		new web3._extend.Method({
-            name: 'getPrivateTransactionReceipt',
-            call: 'eth_getPrivateTransactionReceipt',
-            params: 1,
-            outputFormatter: web3._extend.formatters.outputTransactionReceiptFormatter
-        }),
-		// END-QUORUM
 	],
 	properties: [
 		new web3._extend.Property({
@@ -699,6 +636,11 @@ web3._extend({
 				return formatted;
 			}
 		}),
+		new web3._extend.Property({
+			name: 'maxPriorityFeePerGas',
+			getter: 'eth_maxPriorityFeePerGas',
+			outputFormatter: web3._extend.utils.toBigNumber
+		}),
 	]
 });
 `
@@ -710,8 +652,6 @@ web3._extend({
 		new web3._extend.Method({
 			name: 'start',
 			call: 'miner_start',
-			params: 1,
-			inputFormatter: [null]
 		}),
 		new web3._extend.Method({
 			name: 'stop',
@@ -731,6 +671,12 @@ web3._extend({
 		new web3._extend.Method({
 			name: 'setGasPrice',
 			call: 'miner_setGasPrice',
+			params: 1,
+			inputFormatter: [web3._extend.utils.fromDecimal]
+		}),
+		new web3._extend.Method({
+			name: 'setGasLimit',
+			call: 'miner_setGasLimit',
 			params: 1,
 			inputFormatter: [web3._extend.utils.fromDecimal]
 		}),
@@ -830,50 +776,6 @@ web3._extend({
 });
 `
 
-const ShhJs = `
-web3._extend({
-	property: 'shh',
-	methods: [
-	],
-	properties:
-	[
-		new web3._extend.Property({
-			name: 'version',
-			getter: 'shh_version',
-			outputFormatter: web3._extend.utils.toDecimal
-		}),
-		new web3._extend.Property({
-			name: 'info',
-			getter: 'shh_info'
-		}),
-	]
-});
-`
-
-const SwarmfsJs = `
-web3._extend({
-	property: 'swarmfs',
-	methods:
-	[
-		new web3._extend.Method({
-			name: 'mount',
-			call: 'swarmfs_mount',
-			params: 2
-		}),
-		new web3._extend.Method({
-			name: 'unmount',
-			call: 'swarmfs_unmount',
-			params: 1
-		}),
-		new web3._extend.Method({
-			name: 'listmounts',
-			call: 'swarmfs_listmounts',
-			params: 0
-		}),
-	]
-});
-`
-
 const TxpoolJs = `
 web3._extend({
 	property: 'txpool',
@@ -897,325 +799,10 @@ web3._extend({
 				return status;
 			}
 		}),
-	]
-});
-`
-
-const Raft_JS = `
-web3._extend({
-       property: 'raft',
-       methods:
-       [
-       ],
-       properties:
-       [
-               new web3._extend.Property({
-                       name: 'role',
-                       getter: 'raft_role'
-               }),
-               new web3._extend.Method({
-                       name: 'addPeer',
-                       call: 'raft_addPeer',
-                       params: 1
-               }),
-               new web3._extend.Method({
-                       name: 'addLearner',
-                       call: 'raft_addLearner',
-                       params: 1
-               }),
-               new web3._extend.Method({
-                       name: 'promoteToPeer',
-                       call: 'raft_promoteToPeer',
-                       params: 1
-               }),
-               new web3._extend.Method({
-                       name: 'removePeer',
-                       call: 'raft_removePeer',
-                       params: 1
-               }),
-               new web3._extend.Property({
-                       name: 'leader',
-                       getter: 'raft_leader'
-               }),
-               new web3._extend.Property({
-                       name: 'cluster',
-                       getter: 'raft_cluster'
-               }),
-       ]
-})
-`
-
-const QUORUM_NODE_JS = `
-web3._extend({
-       property: 'quorumPermission',
-       methods:
-       [
-				new web3._extend.Method({
-                       name: 'addOrg',
-                       call: 'quorumPermission_addOrg',
-                       params: 4,
-                       inputFormatter: [null,null,web3._extend.formatters.inputAddressFormatter,web3._extend.formatters.inputTransactionFormatter]
-               }),
-			   new web3._extend.Method({
-                       name: 'approveOrg',
-                       call: 'quorumPermission_approveOrg',
-                       params: 4,
-                       inputFormatter: [null,null,web3._extend.formatters.inputAddressFormatter,web3._extend.formatters.inputTransactionFormatter]
-               }),
-				new web3._extend.Method({
-                       name: 'addSubOrg',
-                       call: 'quorumPermission_addSubOrg',
-                       params: 4,
-                       inputFormatter: [null,null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'updateOrgStatus',
-                       call: 'quorumPermission_updateOrgStatus',
-                       params: 3,
-                       inputFormatter: [null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'approveOrgStatus',
-                       call: 'quorumPermission_approveOrgStatus',
-                       params: 3,
-                       inputFormatter: [null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'addNode',
-                       call: 'quorumPermission_addNode',
-                       params: 3,
-                       inputFormatter: [null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'updateNodeStatus',
-                       call: 'quorumPermission_updateNodeStatus',
-                       params: 4,
-                       inputFormatter: [null,null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'assignAdminRole',
-                       call: 'quorumPermission_assignAdminRole',
-                       params: 4,
-                       inputFormatter: [null,web3._extend.formatters.inputAddressFormatter,null, web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'approveAdminRole',
-                       call: 'quorumPermission_approveAdminRole',
-                       params: 3,
-                       inputFormatter: [null, web3._extend.formatters.inputAddressFormatter,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'addNewRole',
-                       call: 'quorumPermission_addNewRole',
-                       params: 6,
-                       inputFormatter: [null,null,null,null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'removeRole',
-                       call: 'quorumPermission_removeRole',
-                       params: 3,
-                       inputFormatter: [null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'addAccountToOrg',
-                       call: 'quorumPermission_addAccountToOrg',
-                       params: 4,
-                       inputFormatter: [web3._extend.formatters.inputAddressFormatter,null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'changeAccountRole',
-                       call: 'quorumPermission_changeAccountRole',
-                       params: 4,
-                       inputFormatter: [web3._extend.formatters.inputAddressFormatter,null,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-			   new web3._extend.Method({
-                       name: 'updateAccountStatus',
-                       call: 'quorumPermission_updateAccountStatus',
-                       params: 4,
-                       inputFormatter: [null, web3._extend.formatters.inputAddressFormatter,null,web3._extend.formatters.inputTransactionFormatter]
-               }),
-			   new web3._extend.Method({
-                       name: 'recoverBlackListedNode',
-                       call: 'quorumPermission_recoverBlackListedNode',
-                       params: 3,
-                       inputFormatter: [null, null, web3._extend.formatters.inputTransactionFormatter]
-               }),
-			   new web3._extend.Method({
-                       name: 'approveBlackListedNodeRecovery',
-                       call: 'quorumPermission_approveBlackListedNodeRecovery',
-                       params: 3,
-                       inputFormatter: [null, null, web3._extend.formatters.inputTransactionFormatter]
-               }),
-			   new web3._extend.Method({
-                       name: 'recoverBlackListedAccount',
-                       call: 'quorumPermission_recoverBlackListedAccount',
-                       params: 3,
-                       inputFormatter: [null, web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputTransactionFormatter]
-               }),
-			   new web3._extend.Method({
-                       name: 'approveBlackListedAccountRecovery',
-                       call: 'quorumPermission_approveBlackListedAccountRecovery',
-                       params: 3,
-                       inputFormatter: [null, web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'getOrgDetails',
-                       call: 'quorumPermission_getOrgDetails',
-                       params: 1,
-                       inputFormatter: [null]
-               }),
-               new web3._extend.Method({
-                       name: 'transactionAllowed',
-                       call: 'quorumPermission_transactionAllowed',
-                       params: 1,
-                       inputFormatter: [web3._extend.formatters.inputTransactionFormatter]
-               }),
-               new web3._extend.Method({
-                       name: 'connectionAllowed',
-                       call: 'quorumPermission_connectionAllowed',
-                       params: 4,
-                       inputFormatter: [null, null, null, null]
-               }),
-
-       ],
-       properties:
-       [
-			  new web3._extend.Property({
-					   name: 'orgList',
-				       getter: 'quorumPermission_orgList'
-			  }),
-              new web3._extend.Property({
-					   name: 'nodeList',
-				       getter: 'quorumPermission_nodeList'
-			  }),
-              new web3._extend.Property({
-					   name: 'roleList',
-				       getter: 'quorumPermission_roleList'
-			  }),
-              new web3._extend.Property({
-					   name: 'acctList',
-				       getter: 'quorumPermission_acctList'
-			  }),
-       ]
-})
-`
-
-const Istanbul_JS = `
-web3._extend({
-	property: 'istanbul',
-	methods:
-	[
 		new web3._extend.Method({
-			name: 'getSnapshot',
-			call: 'istanbul_getSnapshot',
+			name: 'contentFrom',
+			call: 'txpool_contentFrom',
 			params: 1,
-			inputFormatter: [null]
-		}),
-		new web3._extend.Method({
-			name: 'getSnapshotAtHash',
-			call: 'istanbul_getSnapshotAtHash',
-			params: 1
-		}),
-		new web3._extend.Method({
-			name: 'getValidators',
-			call: 'istanbul_getValidators',
-			params: 1,
-			inputFormatter: [null]
-		}),
-		new web3._extend.Method({
-			name: 'getValidatorsAtHash',
-			call: 'istanbul_getValidatorsAtHash',
-			params: 1
-		}),
-		new web3._extend.Method({
-			name: 'propose',
-			call: 'istanbul_propose',
-			params: 2
-		}),
-		new web3._extend.Method({
-			name: 'discard',
-			call: 'istanbul_discard',
-			params: 1
-		}),
-
-		new web3._extend.Method({
-			name: 'getSignersFromBlock',
-			call: 'istanbul_getSignersFromBlock',
-			params: 1,
-			inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter]
-		}),
-		new web3._extend.Method({
-			name: 'getSignersFromBlockByHash',
-			call: 'istanbul_getSignersFromBlockByHash',
-			params: 1
-		}),
-		new web3._extend.Method({
-			name: 'status',
-			call: 'istanbul_status',
-			params: 2,
-            inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter, web3._extend.formatters.inputBlockNumberFormatter]
-		}),
-		new web3._extend.Method({
-			name: 'isValidator',
-			call: 'istanbul_isValidator',
-			params: 1,
-            inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter]
-		}),
-
-	],
-	properties:
-	[
-		new web3._extend.Property({
-			name: 'candidates',
-			getter: 'istanbul_candidates'
-		}),
-		new web3._extend.Property({
-			name: 'nodeAddress',
-			getter: 'istanbul_nodeAddress'
-		}),
-	]
-});
-`
-
-const AccountingJs = `
-web3._extend({
-	property: 'accounting',
-	methods: [
-		new web3._extend.Property({
-			name: 'balance',
-			getter: 'account_balance'
-		}),
-		new web3._extend.Property({
-			name: 'balanceCredit',
-			getter: 'account_balanceCredit'
-		}),
-		new web3._extend.Property({
-			name: 'balanceDebit',
-			getter: 'account_balanceDebit'
-		}),
-		new web3._extend.Property({
-			name: 'bytesCredit',
-			getter: 'account_bytesCredit'
-		}),
-		new web3._extend.Property({
-			name: 'bytesDebit',
-			getter: 'account_bytesDebit'
-		}),
-		new web3._extend.Property({
-			name: 'msgCredit',
-			getter: 'account_msgCredit'
-		}),
-		new web3._extend.Property({
-			name: 'msgDebit',
-			getter: 'account_msgDebit'
-		}),
-		new web3._extend.Property({
-			name: 'peerDrops',
-			getter: 'account_peerDrops'
-		}),
-		new web3._extend.Property({
-			name: 'selfDrops',
-			getter: 'account_selfDrops'
 		}),
 	]
 });
@@ -1231,6 +818,31 @@ web3._extend({
 			call: 'les_getCheckpoint',
 			params: 1
 		}),
+		new web3._extend.Method({
+			name: 'clientInfo',
+			call: 'les_clientInfo',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'priorityClientInfo',
+			call: 'les_priorityClientInfo',
+			params: 3
+		}),
+		new web3._extend.Method({
+			name: 'setClientParams',
+			call: 'les_setClientParams',
+			params: 2
+		}),
+		new web3._extend.Method({
+			name: 'setDefaultParams',
+			call: 'les_setDefaultParams',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'addBalance',
+			call: 'les_addBalance',
+			params: 2
+		}),
 	],
 	properties:
 	[
@@ -1242,104 +854,10 @@ web3._extend({
 			name: 'checkpointContractAddress',
 			getter: 'les_getCheckpointContractAddress'
 		}),
-	]
-});
-`
-
-const Extension_JS = `
-web3._extend({
-	property: 'quorumExtension',
-	methods:
-	[
-		new web3._extend.Method({
-			name: 'generateExtensionApprovalUuid',
-			call: 'quorumExtension_generateExtensionApprovalUuid',
-			params: 3,
-			inputFormatter: [web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputTransactionFormatter]
-		}),
-		new web3._extend.Method({
-			name: 'approveExtension',
-			call: 'quorumExtension_approveExtension',
-			params: 3,
-			inputFormatter: [web3._extend.formatters.inputAddressFormatter, null, web3._extend.formatters.inputTransactionFormatter]
-		}),
-		new web3._extend.Method({
-			name: 'extendContract',
-			call: 'quorumExtension_extendContract',
-			params: 4,
-			inputFormatter: [web3._extend.formatters.inputAddressFormatter, null, web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputTransactionFormatter]
-		}),
-		new web3._extend.Method({
-			name: 'cancelExtension',
-			call: 'quorumExtension_cancelExtension',
-			params: 2,
-			inputFormatter: [web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputTransactionFormatter]
-		}),
-		new web3._extend.Method({
-			name: 'addBalance',
-			call: 'les_addBalance',
-			params: 2
-		}),
-		new web3._extend.Method({
-			name: 'getExtensionStatus',
-			call: 'quorumExtension_getExtensionStatus',
-			params: 1,
-			inputFormatter: [web3._extend.formatters.inputAddressFormatter]
-		}),
-
-	],
-	properties:
-	[
 		new web3._extend.Property({
-			name: 'activeExtensionContracts',
-			getter: 'quorumExtension_activeExtensionContracts'
-		})
-	]
-});
-`
-
-const QLight_JS = `
-web3._extend({
-	property: 'qlight',
-	methods:
-	[
-		new web3._extend.Method({
-			name: 'getCurrentToken',
-			call: 'qlight_getCurrentToken',
-			params: 0
+			name: 'serverInfo',
+			getter: 'les_serverInfo'
 		}),
-		new web3._extend.Method({
-			name: 'setCurrentToken',
-			call: 'qlight_setCurrentToken',
-			params: 1,
-			inputFormatter: [null]
-		}),
-	],
-	properties:
-	[
-		new web3._extend.Property({
-			name: 'token',
-			getter: 'qlight_getCurrentToken'
-		})
-	]
-});
-`
-
-const Account_Plugin_Js = `
-web3._extend({
-	property: 'plugin_account',
-	methods:
-	[
-		new web3._extend.Method({
-			name: 'newAccount',
-			call: 'plugin@account_newAccount',
-			params: 1
-		}),
-		new web3._extend.Method({
-			name: 'importRawKey',
-			call: 'plugin@account_importRawKey',
-			params: 2
-		})
 	]
 });
 `
@@ -1372,5 +890,24 @@ web3._extend({
 			getter: 'vflux_requestStats'
 		}),
 	]
+});
+`
+
+const DevJs = `
+web3._extend({
+	property: 'dev',
+	methods:
+	[
+		new web3._extend.Method({
+			name: 'addWithdrawal',
+			call: 'dev_addWithdrawal',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'setFeeRecipient',
+			call: 'dev_setFeeRecipient',
+			params: 1
+		}),
+	],
 });
 `
