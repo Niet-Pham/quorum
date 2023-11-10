@@ -26,22 +26,9 @@ const (
 	errInvalidMsg
 )
 
-// Quorum
-//
-// Constants for peer connection errors
-const (
-	// When permissioning is enabled, and node is not permissioned in the network
-	errPermissionDenied = iota + 100
-	// Unauthorized node joining existing raft cluster
-	errNotInRaftCluster
-)
-
 var errorToString = map[int]string{
 	errInvalidMsgCode: "invalid message code",
 	errInvalidMsg:     "invalid message",
-	// Quorum
-	errPermissionDenied: "permission denied",
-	errNotInRaftCluster: "not in raft cluster",
 }
 
 type peerError struct {
@@ -67,7 +54,7 @@ func (pe *peerError) Error() string {
 
 var errProtocolReturned = errors.New("protocol returned")
 
-type DiscReason uint
+type DiscReason uint8
 
 const (
 	DiscRequested DiscReason = iota
@@ -82,8 +69,7 @@ const (
 	DiscUnexpectedIdentity
 	DiscSelf
 	DiscReadTimeout
-	DiscSubprotocolError            = 0x10
-	DiscAuthError        DiscReason = 0x20
+	DiscSubprotocolError = DiscReason(0x10)
 )
 
 var discReasonToString = [...]string{
@@ -100,11 +86,10 @@ var discReasonToString = [...]string{
 	DiscSelf:                "connected to self",
 	DiscReadTimeout:         "read timeout",
 	DiscSubprotocolError:    "subprotocol error",
-	DiscAuthError:           "invalid auth error",
 }
 
 func (d DiscReason) String() string {
-	if len(discReasonToString) < int(d) {
+	if len(discReasonToString) <= int(d) {
 		return fmt.Sprintf("unknown disconnect reason %d", d)
 	}
 	return discReasonToString[d]
@@ -118,7 +103,7 @@ func discReasonForError(err error) DiscReason {
 	if reason, ok := err.(DiscReason); ok {
 		return reason
 	}
-	if err == errProtocolReturned {
+	if errors.Is(err, errProtocolReturned) {
 		return DiscQuitting
 	}
 	peerError, ok := err.(*peerError)

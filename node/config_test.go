@@ -18,21 +18,10 @@ package node
 
 import (
 	"bytes"
-	"fmt"
-	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"testing"
-	"time"
-
-	"github.com/ethereum/go-ethereum/common"
-
-	"github.com/ethereum/go-ethereum/plugin"
-
-	"github.com/ethereum/go-ethereum/params"
-	"github.com/stretchr/testify/assert"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -42,11 +31,7 @@ import (
 // ones or automatically generated temporary ones.
 func TestDatadirCreation(t *testing.T) {
 	// Create a temporary data dir and check that it can be used by a node
-	dir, err := ioutil.TempDir("", "")
-	if err != nil {
-		t.Fatalf("failed to create manual data dir: %v", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	node, err := New(&Config{DataDir: dir})
 	if err != nil {
@@ -68,19 +53,19 @@ func TestDatadirCreation(t *testing.T) {
 		t.Fatalf("freshly created datadir not accessible: %v", err)
 	}
 	// Verify that an impossible datadir fails creation
-	file, err := ioutil.TempFile("", "")
+	file, err := os.CreateTemp("", "")
 	if err != nil {
 		t.Fatalf("failed to create temporary file: %v", err)
 	}
-	defer os.Remove(file.Name())
+	defer func() {
+		file.Close()
+		os.Remove(file.Name())
+	}()
 
 	dir = filepath.Join(file.Name(), "invalid/path")
 	_, err = New(&Config{DataDir: dir})
 	if err == nil {
 		t.Fatalf("protocol stack created with an invalid datadir")
-		if err := node.Close(); err != nil {
-			t.Fatalf("failed to close node: %v", err)
-		}
 	}
 }
 
@@ -119,11 +104,7 @@ func TestIPCPathResolution(t *testing.T) {
 // ephemeral.
 func TestNodeKeyPersistency(t *testing.T) {
 	// Create a temporary folder and make sure no key is present
-	dir, err := ioutil.TempDir("", "node-test")
-	if err != nil {
-		t.Fatalf("failed to create temporary data directory: %v", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	keyfile := filepath.Join(dir, "unit-test", datadirPrivateKey)
 
@@ -134,7 +115,7 @@ func TestNodeKeyPersistency(t *testing.T) {
 	}
 	config := &Config{Name: "unit-test", DataDir: dir, P2P: p2p.Config{PrivateKey: key}}
 	config.NodeKey()
-	if _, err := os.Stat(filepath.Join(keyfile)); err == nil {
+	if _, err := os.Stat(keyfile); err == nil {
 		t.Fatalf("one-shot node key persisted to data directory")
 	}
 
@@ -147,7 +128,7 @@ func TestNodeKeyPersistency(t *testing.T) {
 	if _, err = crypto.LoadECDSA(keyfile); err != nil {
 		t.Fatalf("failed to load freshly persisted node key: %v", err)
 	}
-	blob1, err := ioutil.ReadFile(keyfile)
+	blob1, err := os.ReadFile(keyfile)
 	if err != nil {
 		t.Fatalf("failed to read freshly persisted node key: %v", err)
 	}
@@ -155,7 +136,7 @@ func TestNodeKeyPersistency(t *testing.T) {
 	// Configure a new node and ensure the previously persisted key is loaded
 	config = &Config{Name: "unit-test", DataDir: dir}
 	config.NodeKey()
-	blob2, err := ioutil.ReadFile(filepath.Join(keyfile))
+	blob2, err := os.ReadFile(keyfile)
 	if err != nil {
 		t.Fatalf("failed to read previously persisted node key: %v", err)
 	}
@@ -169,83 +150,4 @@ func TestNodeKeyPersistency(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(".", "unit-test", datadirPrivateKey)); err == nil {
 		t.Fatalf("ephemeral node key persisted to disk")
 	}
-}
-
-func TestConfig_ResolvePluginBaseDir_whenPluginFeatureIsDisabled(t *testing.T) {
-	testObject := &Config{}
-
-	assert.NoError(t, testObject.ResolvePluginBaseDir())
-}
-
-func TestConfig_ResolvePluginBaseDir_whenBaseDirDoesNotExist(t *testing.T) {
-	arbitraryBaseDir := path.Join(os.TempDir(), fmt.Sprintf("foo-%d", time.Now().Unix()))
-	defer func() {
-		_ = os.RemoveAll(arbitraryBaseDir)
-	}()
-	testObject := &Config{
-		Plugins: &plugin.Settings{
-			BaseDir: plugin.EnvironmentAwaredValue(arbitraryBaseDir),
-		},
-	}
-
-	assert.NoError(t, testObject.ResolvePluginBaseDir())
-	assert.True(t, common.FileExist(arbitraryBaseDir))
-	assert.True(t, path.IsAbs(testObject.Plugins.BaseDir.String()))
-}
-
-func TestConfig_ResolvePluginBaseDir_whenBaseDirExists(t *testing.T) {
-	arbitraryBaseDir, err := ioutil.TempDir("", "q-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = os.RemoveAll(arbitraryBaseDir)
-	}()
-	testObject := &Config{
-		Plugins: &plugin.Settings{
-			BaseDir: plugin.EnvironmentAwaredValue(arbitraryBaseDir),
-		},
-	}
-
-	assert.NoError(t, testObject.ResolvePluginBaseDir())
-	assert.True(t, path.IsAbs(testObject.Plugins.BaseDir.String()))
-}
-
-// Quorum
-func TestConfig_IsPermissionEnabled_whenTypical(t *testing.T) {
-	tmpdir, err := ioutil.TempDir("", "q-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = os.RemoveAll(tmpdir)
-	}()
-	if err := ioutil.WriteFile(path.Join(tmpdir, params.PERMISSION_MODEL_CONFIG), []byte("foo"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	testObject := &Config{
-		EnableNodePermission: true,
-		DataDir:              tmpdir,
-	}
-
-	assert.True(t, testObject.IsPermissionEnabled())
-}
-
-// Quorum
-func TestConfig_IsPermissionEnabled_whenPermissionedFlagIsFalse(t *testing.T) {
-	testObject := &Config{
-		EnableNodePermission: false,
-	}
-
-	assert.False(t, testObject.IsPermissionEnabled())
-}
-
-// Quorum
-func TestConfig_IsPermissionEnabled_whenPermissionConfigIsNotAvailable(t *testing.T) {
-	testObject := &Config{
-		EnableNodePermission: true,
-		DataDir:              os.TempDir(),
-	}
-
-	assert.False(t, testObject.IsPermissionEnabled())
 }

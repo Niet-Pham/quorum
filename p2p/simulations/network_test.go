@@ -446,7 +446,7 @@ func TestGetNodeIDs(t *testing.T) {
 	numNodes := 5
 	nodes, err := createTestNodes(numNodes, network)
 	if err != nil {
-		t.Fatalf("Could not creat test nodes %v", err)
+		t.Fatalf("Could not create test nodes %v", err)
 	}
 
 	gotNodeIDs := network.GetNodeIDs()
@@ -495,7 +495,7 @@ func TestGetNodes(t *testing.T) {
 	numNodes := 5
 	nodes, err := createTestNodes(numNodes, network)
 	if err != nil {
-		t.Fatalf("Could not creat test nodes %v", err)
+		t.Fatalf("Could not create test nodes %v", err)
 	}
 
 	gotNodes := network.GetNodes()

@@ -14,8 +14,6 @@
 */**/*tx_database*
 */**/*dapps*
 build/_vendor/pkg
-.idea
-*.iml
 
 #*
 .#*
@@ -49,8 +47,6 @@ profile.cov
 /dashboard/assets/package-lock.json
 
 **/yarn-error.log
+logs/
 
-# QUORUM
-generated-release-notes.md
-
-build/PEEPS
+tests/spec-tests/

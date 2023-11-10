@@ -45,21 +45,17 @@ func (s *Server) ServeListener(l net.Listener) error {
 //
 // The context is used for the initial connection establishment. It does not
 // affect subsequent interactions with the client.
-//
-// Quorum
-//  1. Enrich the IPC client with PSI value returned by provider function, if found in the context.
-//     Here we have to use the id field in JSON message to carry the PSI value.
 func DialIPC(ctx context.Context, endpoint string) (*Client, error) {
-	ctx = resolvePSIProvider(ctx, endpoint)
-	client, err := newClient(ctx, func(ctx context.Context) (ServerCodec, error) {
+	cfg := new(clientConfig)
+	return newClient(ctx, cfg, newClientTransportIPC(endpoint))
+}
+
+func newClientTransportIPC(endpoint string) reconnectFunc {
+	return func(ctx context.Context) (ServerCodec, error) {
 		conn, err := newIPCConnection(ctx, endpoint)
 		if err != nil {
 			return nil, err
 		}
-		return NewCodec(conn), nil
-	})
-	if err != nil {
-		return nil, err
+		return NewCodec(conn), err
 	}
-	return client, nil
 }

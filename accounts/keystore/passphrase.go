@@ -34,7 +34,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -82,7 +81,7 @@ type keyStorePassphrase struct {
 
 func (ks keyStorePassphrase) GetKey(addr common.Address, filename, auth string) (*Key, error) {
 	// Load the key from the keystore and decrypt its contents
-	keyjson, err := ioutil.ReadFile(filename)
+	keyjson, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
@@ -226,10 +225,13 @@ func DecryptKey(keyjson []byte, auth string) (*Key, error) {
 	if err != nil {
 		return nil, err
 	}
-	key := crypto.ToECDSAUnsafe(keyBytes)
+	key, err := crypto.ToECDSA(keyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid key: %w", err)
+	}
 	id, err := uuid.FromBytes(keyId)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid UUID: %w", err)
 	}
 	return &Key{
 		Id:         id,

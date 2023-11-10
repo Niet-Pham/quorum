@@ -88,9 +88,6 @@ func NewClientNode(cm *ClientManager, params ServerParams) *ClientNode {
 
 // Disconnect should be called when a client is disconnected
 func (node *ClientNode) Disconnect() {
-	if node == nil {
-		return
-	}
 	node.lock.Lock()
 	defer node.lock.Unlock()
 
@@ -185,7 +182,7 @@ func (node *ClientNode) UpdateParams(params ServerParams) {
 				return
 			}
 		}
-		node.updateSchedule = append(node.updateSchedule, scheduledUpdate{time: now + mclock.AbsTime(DecParamDelay), params: params})
+		node.updateSchedule = append(node.updateSchedule, scheduledUpdate{time: now.Add(DecParamDelay), params: params})
 	}
 }
 
